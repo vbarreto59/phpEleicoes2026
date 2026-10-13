@@ -3,6 +3,7 @@
 // Configuração do banco
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
+require_once __DIR__ . '/auth.php';
 
 $pdo = new PDO(
     "mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4",
@@ -13,6 +14,45 @@ $pdo = new PDO(
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]
 );
+
+// ------------------------------------------------------------
+// Fallback: garante que as variáveis de usuário existam
+// ------------------------------------------------------------
+if (!isset($__u)) {
+    if (function_exists('usuarioLogado')) {
+        $__u = usuarioLogado();
+    } else {
+        $__u = [
+            'nome'   => $_SESSION['usuario_nome']   ?? '—',
+            'login'  => $_SESSION['usuario_login']  ?? '',
+            'perfil' => $_SESSION['usuario_perfil'] ?? '',
+        ];
+    }
+}
+$__perfil       = strtolower(trim((string)($__u['perfil'] ?? '')));
+$__ehSuper      = ($__perfil === 'superadmin' || $__perfil === 'super');
+$__ehAdminNivel = ($__perfil === 'admin' || $__perfil === 'administrador');
+
+$__loginLower = mb_strtolower(trim((string)($__u['login'] ?? '')), 'UTF-8');
+$__nomeLower  = mb_strtolower(trim((string)($__u['nome']  ?? '')), 'UTF-8');
+$__loginsDono = ['barreto', 'vbarreto'];
+$__nomesDono  = ['barreto', 'valter barreto'];
+$__ehDono = in_array($__loginLower, $__loginsDono, true)
+         || in_array($__nomeLower,  $__nomesDono,  true);
+
+$__ehAdmin = ($__ehSuper || $__ehAdminNivel);
+$isAdmin   = ($__ehAdmin && $__ehDono);
+
+if ($__ehSuper) {
+    $__classePerfil = 'super';
+    $__rotuloPerfil = 'SUPERADMIN';
+} elseif ($__ehAdminNivel) {
+    $__classePerfil = 'admin';
+    $__rotuloPerfil = 'ADMIN';
+} else {
+    $__classePerfil = 'visitante';
+    $__rotuloPerfil = 'VISITANTE';
+}
 
 // ------------------------------------------------------------
 // Detecta se a coluna 'ano' existe
@@ -164,7 +204,7 @@ if ($ordem === 'nome') {
 $graficoRegioes = [
     'labels'      => array_keys($matrizRegiao),
     'candidatos'  => $candidatosSelecionados,
-    'series'      => [], // candidato => [votos por região, na ordem dos labels]
+    'series'      => [],
 ];
 
 if (!empty($candidatosSelecionados)) {
@@ -238,6 +278,37 @@ function maiorDaLinha(array $linha, array $candidatos): int {
     body { font-family: Arial, sans-serif; margin: 20px; background:#f7f7f7; color:#333; }
     h1 { color:#333; }
     h2 { margin-top:30px; }
+
+    /* ===== Barra de usuário (mesmo modelo do consultar.php) ===== */
+    .barra-usuario {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: #fff;
+        padding: 10px 16px;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,.08);
+        margin-bottom: 18px;
+        font-size: 13px;
+    }
+    .barra-usuario.super { border-left: 5px solid #6f42c1; }
+    .barra-usuario.admin { border-left: 5px solid #0d6efd; }
+    .nome-user { font-weight: 600; }
+    .perfil-tag {
+        background: #e9ecef; color: #495057;
+        padding: 2px 10px; border-radius: 12px;
+        font-size: 11px; font-weight: 600; text-transform: uppercase;
+    }
+    .perfil-tag.admin { background:#0d6efd; color:#fff; }
+    .perfil-tag.super { background:#6f42c1; color:#fff; }
+    .badge-super     { background:#6f42c1; color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .badge-admin     { background:#0d6efd; color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .badge-visitante { background:#e9ecef; color:#495057; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .link-debug {
+        margin-left: auto; color: #6c757d;
+        text-decoration: none; font-size: 12px;
+    }
+    .link-debug:hover { color: #0d6efd; text-decoration: underline; }
 
     .kpis { display:flex; gap:15px; flex-wrap:wrap; margin-bottom:20px; }
     .kpi {
@@ -331,7 +402,7 @@ function maiorDaLinha(array $linha, array $candidatos): int {
 
     .legenda-abrev {
         background:#fff; padding:10px 14px; border-radius:6px;
-        box-shadow:0 1px 2px rgba(0,0,0,.08); font-size:12px; margin-bottom:14px;
+        box-shadow: 0 1px 2px rgba(0,0,0,.08); font-size:12px; margin-bottom:14px;
         display:flex; flex-wrap:wrap; gap:14px;
     }
     .legenda-abrev .item { display:flex; align-items:center; gap:6px; }
@@ -380,6 +451,24 @@ function maiorDaLinha(array $linha, array $candidatos): int {
 <a href="index.php" class="link-voltar">&larr; Voltar ao menu</a>
 
 <h1>Comparar Candidatos por Município</h1>
+
+<div class="barra-usuario <?= $__ehAdmin ? ($__ehSuper ? 'super' : 'admin') : '' ?>">
+    <span>👤 <span class="nome-user"><?= htmlspecialchars($__u['nome'] ?? '—') ?></span></span>
+    <span class="perfil-tag <?= htmlspecialchars($__classePerfil) ?>">
+        <?= htmlspecialchars($__rotuloPerfil) ?>
+    </span>
+    <?php if ($isAdmin): ?>
+        <span class="<?= $__ehSuper ? 'badge-super' : 'badge-admin' ?>">
+            <?= $__ehSuper ? '🔓 superadmin' : '🔓 administrador' ?>
+        </span>
+    <?php elseif ($__ehAdmin && !$__ehDono): ?>
+        <span class="badge-admin">🔓 admin (não autorizado a excluir)</span>
+    <?php else: ?>
+        <span class="badge-visitante">👁️ visitante</span>
+    <?php endif; ?>
+
+    <a class="link-debug" href="?debug_sessao=1">🔍 ver sessão</a>
+</div>
 
 <?php if (!$temAno): ?>
     <div class="aviso">
@@ -631,7 +720,6 @@ function maiorDaLinha(array $linha, array $candidatos): int {
                 if (typeof Chart === 'undefined') return;
                 if (!DADOS_BARRAS || !DADOS_BARRAS.labels || !DADOS_BARRAS.labels.length) return;
 
-                // Paleta com cores distintas por candidato
                 const CORES = [
                     '#0069d9', '#dc3545', '#28a745', '#fd7e14', '#6f42c1',
                     '#20c997', '#e83e8c', '#ffc107', '#17a2b8', '#6610f2',
@@ -649,7 +737,6 @@ function maiorDaLinha(array $linha, array $candidatos): int {
                         borderColor: cor,
                         borderWidth: 1,
                         borderRadius: 4,
-                        // Deixa a barra mais fina quando há muitos candidatos
                         maxBarThickness: 44,
                     };
                 });

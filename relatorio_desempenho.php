@@ -3,6 +3,7 @@
 // relatorio_desempenho.php
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
+require_once __DIR__ . '/auth.php';
 
 $pdo = new PDO(
     "mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4",
@@ -12,6 +13,45 @@ $pdo = new PDO(
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]
 );
+
+// ------------------------------------------------------------
+// Fallback: garante que as variáveis de usuário existam
+// ------------------------------------------------------------
+if (!isset($__u)) {
+    if (function_exists('usuarioLogado')) {
+        $__u = usuarioLogado();
+    } else {
+        $__u = [
+            'nome'   => $_SESSION['usuario_nome']   ?? '—',
+            'login'  => $_SESSION['usuario_login']  ?? '',
+            'perfil' => $_SESSION['usuario_perfil'] ?? '',
+        ];
+    }
+}
+$__perfil       = strtolower(trim((string)($__u['perfil'] ?? '')));
+$__ehSuper      = ($__perfil === 'superadmin' || $__perfil === 'super');
+$__ehAdminNivel = ($__perfil === 'admin' || $__perfil === 'administrador');
+
+$__loginLower = mb_strtolower(trim((string)($__u['login'] ?? '')), 'UTF-8');
+$__nomeLower  = mb_strtolower(trim((string)($__u['nome']  ?? '')), 'UTF-8');
+$__loginsDono = ['barreto', 'vbarreto'];
+$__nomesDono  = ['barreto', 'valter barreto'];
+$__ehDono = in_array($__loginLower, $__loginsDono, true)
+         || in_array($__nomeLower,  $__nomesDono,  true);
+
+$__ehAdmin = ($__ehSuper || $__ehAdminNivel);
+$isAdmin   = ($__ehAdmin && $__ehDono);
+
+if ($__ehSuper) {
+    $__classePerfil = 'super';
+    $__rotuloPerfil = 'SUPERADMIN';
+} elseif ($__ehAdminNivel) {
+    $__classePerfil = 'admin';
+    $__rotuloPerfil = 'ADMIN';
+} else {
+    $__classePerfil = 'visitante';
+    $__rotuloPerfil = 'VISITANTE';
+}
 
 // ============================================================
 // DETECÇÃO DE ESTRUTURAS
@@ -57,7 +97,6 @@ $COL_EXPECT = null;
 foreach ($candidatosExpect as $cand) {
     if (in_array($cand, $colunasLider, true)) { $COL_EXPECT = $cand; break; }
 }
-// Expressão SQL: nome da coluna ou 0
 $EXPECT_SQL = $COL_EXPECT ? "l.`$COL_EXPECT`" : "0";
 
 // ---------- coluna de candidato em `coordenadores` ----------
@@ -98,7 +137,7 @@ function fmtNum(int|float|null $n): string {
 // ============================================================
 // FILTROS
 // ============================================================
-$filtroCand   = trim($_GET['cand']   ?? '');   // '' = todos
+$filtroCand   = trim($_GET['cand']   ?? '');
 $filtroCoord  = (int)($_GET['coord'] ?? 0);
 $filtroLider  = (int)($_GET['lider'] ?? 0);
 $filtroStatus = $_GET['status'] ?? 'todas';
@@ -107,7 +146,6 @@ if (!in_array($filtroStatus, ['todas','ativas','inativas'], true)) {
     $filtroStatus = 'todas';
 }
 
-// Lista de candidatos
 $listaCandidatos = [];
 if ($temCandidatoCoord) {
     $listaCandidatos = $pdo->query(
@@ -117,7 +155,6 @@ if ($temCandidatoCoord) {
     )->fetchAll(PDO::FETCH_COLUMN);
 }
 
-// Lista de coordenadores (para o select)
 if ($temCandidatoCoord && $filtroCand !== '') {
     $stmt = $pdo->prepare(
         "SELECT id, nome, ativo, nomeCandidatoResp
@@ -135,7 +172,6 @@ if ($temCandidatoCoord && $filtroCand !== '') {
     )->fetchAll();
 }
 
-// Lista de lideranças (todas — a cascata é feita em JS)
 $listaLideres = $pdo->query(
     "SELECT l.id, l.nome, l.coordenador_id, l.ativo
        FROM liderancas l
@@ -143,7 +179,6 @@ $listaLideres = $pdo->query(
       ORDER BY c.nome, l.nome"
 )->fetchAll();
 
-// Se um líder específico foi selecionado, força o coordenador dele
 if ($filtroLider > 0) {
     foreach ($listaLideres as $ll) {
         if ((int)$ll['id'] === $filtroLider) {
@@ -153,7 +188,6 @@ if ($filtroLider > 0) {
     }
 }
 
-// ---------- WHERE dinâmico ----------
 $whereLid    = [];
 $paramsLid   = [];
 $whereCoord  = [];
@@ -448,6 +482,37 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
     .info-col .aviso { color:#856404; background:#fff3cd;
         padding:2px 8px; border-radius:6px; font-weight:bold; margin-left:6px; }
 
+    /* ===== Barra de usuário (mesmo modelo das outras páginas) ===== */
+    .barra-usuario {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: #fff;
+        padding: 10px 16px;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,.08);
+        margin-bottom: 18px;
+        font-size: 13px;
+    }
+    .barra-usuario.super { border-left: 5px solid #6f42c1; }
+    .barra-usuario.admin { border-left: 5px solid #0d6efd; }
+    .nome-user { font-weight: 600; }
+    .perfil-tag {
+        background: #e9ecef; color: #495057;
+        padding: 2px 10px; border-radius: 12px;
+        font-size: 11px; font-weight: 600; text-transform: uppercase;
+    }
+    .perfil-tag.admin { background:#0d6efd; color:#fff; }
+    .perfil-tag.super { background:#6f42c1; color:#fff; }
+    .badge-super     { background:#6f42c1; color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .badge-admin     { background:#0d6efd; color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .badge-visitante { background:#e9ecef; color:#495057; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .link-debug {
+        margin-left: auto; color: #6c757d;
+        text-decoration: none; font-size: 12px;
+    }
+    .link-debug:hover { color: #0d6efd; text-decoration: underline; }
+
     .filtros {
         background:#fff; border-radius:8px; padding:16px 20px;
         box-shadow:0 1px 3px rgba(0,0,0,.1); margin-bottom:20px;
@@ -590,10 +655,29 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
 
 <a href="index.php" class="link-voltar no-print">&larr; Voltar ao menu</a>
 
+<h1>Relatório de Desempenho</h1>
+
+<div class="barra-usuario <?= $__ehAdmin ? ($__ehSuper ? 'super' : 'admin') : '' ?>">
+    <span>👤 <span class="nome-user"><?= htmlspecialchars($__u['nome'] ?? '—') ?></span></span>
+    <span class="perfil-tag <?= htmlspecialchars($__classePerfil) ?>">
+        <?= htmlspecialchars($__rotuloPerfil) ?>
+    </span>
+    <?php if ($isAdmin): ?>
+        <span class="<?= $__ehSuper ? 'badge-super' : 'badge-admin' ?>">
+            <?= $__ehSuper ? '🔓 superadmin' : '🔓 administrador' ?>
+        </span>
+    <?php elseif ($__ehAdmin && !$__ehDono): ?>
+        <span class="badge-admin">🔓 admin (não autorizado a excluir)</span>
+    <?php else: ?>
+        <span class="badge-visitante">👁️ visitante</span>
+    <?php endif; ?>
+
+    <a class="link-debug" href="?debug_sessao=1">🔍 ver sessão</a>
+</div>
+
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
     <div>
-        <h1>Relatório de Desempenho</h1>
-        <p class="info-col">
+        <p class="info-col" style="margin-top:0;">
             Coluna de votos: <strong><?= htmlspecialchars($COL_VOTOS) ?></strong> ·
             Expectativa em <code>liderancas</code>:
             <?php if ($COL_EXPECT): ?><strong><?= htmlspecialchars($COL_EXPECT) ?></strong>
@@ -1132,7 +1216,6 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
         const selCoord = document.getElementById('f-coord');
         const selLider = document.getElementById('f-lider');
 
-        // Snapshot das opções originais
         const opcoesCoord = Array.from(selCoord.querySelectorAll('option'))
             .filter(op => op.value !== '0')
             .map(op => ({
@@ -1194,7 +1277,6 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
         if (selCand) selCand.addEventListener('change', repopularCoords);
         selCoord.addEventListener('change', repopularLideres);
 
-        // Ao trocar liderança, auto-seleciona o coordenador dela
         selLider.addEventListener('change', function () {
             const opt = this.options[this.selectedIndex];
             if (!opt) return;

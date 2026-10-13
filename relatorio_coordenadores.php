@@ -4,7 +4,39 @@
 // Relatório de coordenadores agrupado por candidato
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
+require_once __DIR__ . '/auth.php';
 
+// ============================================================
+// USUÁRIO LOGADO
+// ============================================================
+$__u = usuarioLogado();
+
+$__loginLower = mb_strtolower(trim((string)($__u['login'] ?? '')), 'UTF-8');
+$__nomeLower  = mb_strtolower(trim((string)($__u['nome']  ?? '')), 'UTF-8');
+$__perfil     = $__u['perfil'] ?? 'consulta';
+
+$__loginsDono = ['barreto', 'vbarreto'];
+$__nomesDono  = ['barreto', 'valter barreto'];
+
+$__ehDono = in_array($__loginLower, $__loginsDono, true)
+         || in_array($__nomeLower,  $__nomesDono,  true);
+
+$__ehSuper      = ($__perfil === 'superadmin');
+$__ehAdminNivel = ($__perfil === 'admin');
+$__ehAdmin      = ($__ehSuper || $__ehAdminNivel);
+
+$isAdmin = ($__ehAdmin && $__ehDono);
+
+$__rotuloPerfil = function_exists('rotuloPerfil')
+                    ? rotuloPerfil($__perfil)
+                    : strtoupper($__perfil);
+$__classePerfil = function_exists('classePerfil')
+                    ? classePerfil($__perfil)
+                    : ('perfil-' . $__perfil);
+
+// ============================================================
+// CONEXÃO PDO
+// ============================================================
 $pdo = new PDO(
     "mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4",
     $DB_USER, $DB_PASS,
@@ -17,10 +49,7 @@ $pdo = new PDO(
 // ============================================================
 // DETECÇÃO DE ESTRUTURAS
 // ============================================================
-
-// ---------- coluna de votos em `votos` ----------
-$colunasVotos = [];
-foreach ($pdo->query("SHOW COLUMNS FROM votos") as $c) $colunasVotos[] = $c['Field'];
+$colunasVotos = $pdo->query("SHOW COLUMNS FROM votos")->fetchAll(PDO::FETCH_COLUMN);
 
 $candidatosVotos = [
     'votos','quantidade','total','qtde','qtd','totalVotos','total_votos',
@@ -44,10 +73,7 @@ if ($COL_VOTOS === null) {
 }
 if ($COL_VOTOS === null) die("Coluna de votos não detectada em `votos`.");
 
-// ---------- coluna de expectativa em `liderancas` ----------
-$colunasLider = [];
-foreach ($pdo->query("SHOW COLUMNS FROM liderancas") as $c) $colunasLider[] = $c['Field'];
-
+$colunasLider = $pdo->query("SHOW COLUMNS FROM liderancas")->fetchAll(PDO::FETCH_COLUMN);
 $candidatosExpect = [
     'expectativa_votos','expectativa','votos_esperados','qtd_esperada',
     'qtde_esperada','previsao','meta','previsao_votos','votos_previstos',
@@ -56,14 +82,11 @@ $COL_EXPECT = null;
 foreach ($candidatosExpect as $cand) {
     if (in_array($cand, $colunasLider, true)) { $COL_EXPECT = $cand; break; }
 }
-$EXPECT_SQL = $COL_EXPECT ? "l.`$COL_EXPECT`" : "0";
+$EXPECT_COL = $COL_EXPECT ?: null;
 
-// ---------- coluna de candidato em `coordenadores` ----------
-$colunasCoord = [];
-foreach ($pdo->query("SHOW COLUMNS FROM coordenadores") as $c) $colunasCoord[] = $c['Field'];
+$colunasCoord = $pdo->query("SHOW COLUMNS FROM coordenadores")->fetchAll(PDO::FETCH_COLUMN);
 $temCandidatoCoord = in_array('nomeCandidatoResp', $colunasCoord, true);
 
-// ---------- tabela lider_secao existe? ----------
 $temLiderSecao = false;
 try { $pdo->query("SELECT 1 FROM lider_secao LIMIT 1"); $temLiderSecao = true; }
 catch (Exception $e) { $temLiderSecao = false; }
@@ -88,7 +111,8 @@ function classificarPct(?float $pct): array {
 // FILTROS
 // ============================================================
 $filtroCand   = trim($_GET['cand']   ?? '');
-$filtroStatus = $_GET['status']      ?? 'todos';   // todos | ativos | inativos
+$filtroRegiao = (int)($_GET['regiao'] ?? 0);
+$filtroStatus = $_GET['status']      ?? 'todos';
 $busca        = trim($_GET['busca']  ?? '');
 
 if (!in_array($filtroStatus, ['todos','ativos','inativos'], true)) {
@@ -105,8 +129,16 @@ if ($temCandidatoCoord) {
     )->fetchAll(PDO::FETCH_COLUMN);
 }
 
+// Lista de regiões
+$listaRegioes = [];
+try {
+    $listaRegioes = $pdo->query(
+        "SELECT id, nome FROM regioes ORDER BY nome"
+    )->fetchAll();
+} catch (Exception $e) { $listaRegioes = []; }
+
 // ============================================================
-// QUERY PRINCIPAL — COORDENADORES
+// WHERE
 // ============================================================
 $where  = [];
 $params = [];
@@ -121,49 +153,93 @@ if ($busca !== '') {
     $where[] = "c.nome LIKE :fbusca";
     $params[':fbusca'] = '%' . $busca . '%';
 }
-
+if ($filtroRegiao > 0) {
+    $where[] = "EXISTS (
+        SELECT 1
+          FROM coordenador_zona cz2
+          INNER JOIN secoes_enderecos s2
+                  ON s2.numeroZona = cz2.numeroZona
+          INNER JOIN municipio_regiao mr2
+                  ON mr2.nomeMunicipio COLLATE utf8mb4_general_ci
+                   = s2.nomeMunicipio  COLLATE utf8mb4_general_ci
+         WHERE cz2.coordenador_id = c.id
+           AND mr2.regiao_id = :freg
+    )";
+    $params[':freg'] = $filtroRegiao;
+}
 $whereStr = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-$colCand = $temCandidatoCoord ? "c.nomeCandidatoResp AS candidato," : "NULL AS candidato,";
+// ============================================================
+// QUERY 1 — coordenadores + agregados
+// ============================================================
+$colCand = $temCandidatoCoord
+    ? "c.nomeCandidatoResp AS candidato"
+    : "NULL AS candidato";
 
-$subCoordZonas = "(SELECT COUNT(DISTINCT cz.numeroZona) FROM coordenador_zona cz
-                   WHERE cz.coordenador_id = c.id)";
-
-$subLiderTotal = "(SELECT COUNT(*) FROM liderancas l WHERE l.coordenador_id = c.id)";
-$subLiderAtiva = "(SELECT COUNT(*) FROM liderancas l WHERE l.coordenador_id = c.id AND l.ativo = 1)";
-
-$subEsperado = "(SELECT COALESCE(SUM($EXPECT_SQL), 0)
-                  FROM liderancas l
-                 WHERE l.coordenador_id = c.id AND l.ativo = 1)";
-
-$subUrnas = $temLiderSecao
-    ? "(SELECT COALESCE(SUM(v.`$COL_VOTOS`), 0)
-          FROM votos v
-         WHERE (v.numeroZona, v.numeroSecao) IN (
-                SELECT DISTINCT ls.numeroZona, ls.numeroSecao
-                  FROM lider_secao ls
-                  INNER JOIN liderancas l2 ON l2.id = ls.lider_id
-                 WHERE l2.coordenador_id = c.id AND l2.ativo = 1
-         ))"
+$colExpectSum = $EXPECT_COL
+    ? "COALESCE(SUM(CASE WHEN l.ativo = 1 THEN l.`$EXPECT_COL` ELSE 0 END), 0)"
     : "0";
 
-$sql = "
-    SELECT c.id, c.nome, c.ativo,
-           $colCand
-           $subCoordZonas     AS qtd_zonas,
-           $subLiderTotal     AS qtd_liderancas,
-           $subLiderAtiva     AS qtd_liderancas_ativas,
-           $subEsperado       AS votos_esperados,
-           $subUrnas          AS votos_urnas
+$sqlCoord = "
+    SELECT
+        c.id, c.nome, c.ativo,
+        $colCand,
+        COUNT(DISTINCT cz.numeroZona) AS qtd_zonas,
+        COUNT(DISTINCT l.id) AS qtd_liderancas,
+        COUNT(DISTINCT CASE WHEN l.ativo = 1 THEN l.id END) AS qtd_liderancas_ativas,
+        $colExpectSum AS votos_esperados
     FROM coordenadores c
+    LEFT JOIN coordenador_zona cz ON cz.coordenador_id = c.id
+    LEFT JOIN liderancas l        ON l.coordenador_id  = c.id
     $whereStr
+    GROUP BY c.id, c.nome, c.ativo
+    " . ($temCandidatoCoord ? ", c.nomeCandidatoResp" : "") . "
     ORDER BY candidato, c.nome
 ";
-$stmt = $pdo->prepare($sql);
+$stmt = $pdo->prepare($sqlCoord);
 $stmt->execute($params);
 $coordenadores = $stmt->fetchAll();
 
+// ============================================================
+// QUERY 2 — votos das urnas por coordenador
+// ============================================================
+$votosPorCoordenador = [];
+
+if ($temLiderSecao && $coordenadores) {
+    $idsCoord = array_map(fn($c) => (int)$c['id'], $coordenadores);
+    $idsCoord = array_filter($idsCoord, fn($id) => $id > 0);
+
+    if ($idsCoord) {
+        $in = implode(',', array_fill(0, count($idsCoord), '?'));
+
+        $sqlUrnas = "
+            SELECT pares.coordenador_id, SUM(v.`$COL_VOTOS`) AS votos_urnas
+            FROM (
+                SELECT DISTINCT l.coordenador_id, ls.numeroZona, ls.numeroSecao
+                  FROM lider_secao ls
+                  INNER JOIN liderancas l ON l.id = ls.lider_id
+                 WHERE l.ativo = 1
+                   AND l.coordenador_id IN ($in)
+            ) AS pares
+            INNER JOIN votos v
+                    ON v.numeroZona  = pares.numeroZona
+                   AND v.numeroSecao = pares.numeroSecao
+            GROUP BY pares.coordenador_id
+        ";
+        $stmt = $pdo->prepare($sqlUrnas);
+        $stmt->execute($idsCoord);
+        foreach ($stmt->fetchAll() as $row) {
+            $votosPorCoordenador[(int)$row['coordenador_id']] = (int)$row['votos_urnas'];
+        }
+    }
+}
+
+// ============================================================
+// MONTA CADA COORDENADOR
+// ============================================================
 foreach ($coordenadores as &$c) {
+    $c['votos_urnas'] = $votosPorCoordenador[(int)$c['id']] ?? 0;
+
     $esp = (int)$c['votos_esperados'];
     $urn = (int)$c['votos_urnas'];
     $c['diferenca'] = $urn - $esp;
@@ -196,11 +272,11 @@ $totGeral = [
 ];
 foreach ($coordenadores as $c) {
     if ((int)$c['ativo'] === 1) $totGeral['ativos']++;
-    $totGeral['zonas']              += (int)$c['qtd_zonas'];
-    $totGeral['liderancas']         += (int)$c['qtd_liderancas'];
-    $totGeral['liderancas_ativas']  += (int)$c['qtd_liderancas_ativas'];
-    $totGeral['esperado']           += (int)$c['votos_esperados'];
-    $totGeral['urnas']              += (int)$c['votos_urnas'];
+    $totGeral['zonas']             += (int)$c['qtd_zonas'];
+    $totGeral['liderancas']        += (int)$c['qtd_liderancas'];
+    $totGeral['liderancas_ativas'] += (int)$c['qtd_liderancas_ativas'];
+    $totGeral['esperado']          += (int)$c['votos_esperados'];
+    $totGeral['urnas']             += (int)$c['votos_urnas'];
 }
 $totGeral['diferenca'] = $totGeral['urnas'] - $totGeral['esperado'];
 $totGeral['pct'] = $totGeral['esperado'] > 0
@@ -231,7 +307,8 @@ foreach ($porCandidato as $cand => $lista) {
     $totPorCand[$cand] = $t;
 }
 
-$temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
+$temFiltro = ($filtroCand !== '' || $filtroRegiao > 0
+              || $filtroStatus !== 'todos' || $busca !== '');
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -246,6 +323,49 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
     .info-col .aviso { color:#856404; background:#fff3cd;
         padding:2px 8px; border-radius:6px; font-weight:bold; margin-left:6px; }
 
+    /* ============================================================
+       CARD DO USUÁRIO LOGADO
+       ============================================================ */
+    .barra-usuario {
+        background:#fff; padding:10px 16px; border-radius:6px;
+        box-shadow:0 1px 3px rgba(0,0,0,.08);
+        display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+        font-size:13.5px; margin-bottom:18px;
+        border-left:5px solid #6c757d;
+    }
+    .barra-usuario.admin { border-left-color:#ffc107; }
+    .barra-usuario.super { border-left-color:#dc3545; }
+    .barra-usuario .nome-user { font-weight:bold; color:#333; }
+    .barra-usuario .saudacao { color:#888; font-weight:normal; margin-right:3px; }
+
+    .perfil-tag {
+        font-size:10px; padding:2px 8px; border-radius:8px;
+        font-weight:bold; letter-spacing:.5px;
+        background:#e6f0fa; color:#0069d9;
+    }
+    .perfil-tag.perfil-super    { background:#dc3545; color:#fff; }
+    .perfil-tag.perfil-admin    { background:#fff3cd; color:#856404; }
+    .perfil-tag.perfil-consulta { background:#e6f0fa; color:#0069d9; }
+
+    .badge-admin {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#fff3cd; color:#856404;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
+    .badge-super {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#dc3545; color:#fff;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
+    .badge-visitante {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#e9ecef; color:#495057;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
+
     /* Filtros */
     .filtros {
         background:#fff; border-radius:8px; padding:16px 20px;
@@ -253,7 +373,7 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
         display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end;
         border-left:5px solid #0069d9;
     }
-    .filtros .campo { display:flex; flex-direction:column; min-width:220px; flex:1; }
+    .filtros .campo { display:flex; flex-direction:column; min-width:200px; flex:1; }
     .filtros .campo label {
         font-size:11px; font-weight:bold; color:#555;
         text-transform:uppercase; letter-spacing:.5px; margin-bottom:4px;
@@ -295,6 +415,18 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
     }
     .badge-filtro .x:hover { color:#dc3545; }
 
+    /* Barra de expandir/recolher */
+    .barra-expandir {
+        display:flex; gap:8px; margin-bottom:14px;
+    }
+    .barra-expandir button {
+        background:#fff; border:1px solid #ccc;
+        padding:6px 12px; border-radius:4px;
+        cursor:pointer; font-size:12px; color:#555;
+        font-family:inherit;
+    }
+    .barra-expandir button:hover { border-color:#0069d9; color:#0069d9; }
+
     /* KPIs */
     .kpis { display:flex; gap:15px; flex-wrap:wrap; margin-bottom:15px; }
     .kpi {
@@ -311,7 +443,7 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
     .kpi.teal    { border-left-color:#17a2b8; } .kpi.teal .valor  { color:#17a2b8; }
     .kpi.vermelho{ border-left-color:#dc3545; } .kpi.vermelho .valor { color:#dc3545; }
 
-    /* Seções por candidato */
+    /* Blocos por candidato */
     .cand-bloco {
         background:#fff; border-radius:10px; margin-bottom:24px;
         box-shadow: 0 2px 8px rgba(0,0,0,.08);
@@ -322,12 +454,24 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
         color:#fff; padding:14px 22px;
         display:flex; align-items:center; justify-content:space-between;
         flex-wrap:wrap; gap:12px;
+        cursor:pointer;
+        user-select:none;
     }
+    .cand-header:hover { background: linear-gradient(90deg, #3a1470, #5b32a8); }
     .cand-header .titulo {
         display:flex; align-items:center; gap:10px;
         font-size:16px; font-weight:bold;
     }
     .cand-header .titulo .ico { font-size:20px; }
+    .cand-header .titulo .seta {
+        font-size:12px;
+        transition: transform .2s;
+        display:inline-block;
+        margin-left:6px;
+    }
+    .cand-bloco.recolhido .cand-header .titulo .seta {
+        transform: rotate(-90deg);
+    }
     .cand-header .resumo {
         display:flex; gap:18px; flex-wrap:wrap;
         font-size:12.5px; opacity:.95;
@@ -342,7 +486,8 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
         font-weight:normal; opacity:.85;
     }
 
-    .cand-bloco .cand-body { padding: 0; }
+    .cand-body { padding: 0; }
+    .cand-bloco.recolhido .cand-body { display:none; }
 
     /* Tabelas */
     table { border-collapse:collapse; width:100%; background:#fff; }
@@ -351,6 +496,16 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
     tr:hover { background:#faf7ff; }
     tr.linha-total { background:#f6f0ff; font-weight:bold; }
     tr.linha-total td { border-top:2px solid #6f42c1; }
+
+    /* Primeiro colocado */
+    tr.primeiro-lugar td {
+        background: #fffbe6 !important;
+        border-top: 2px solid #ffc107;
+        border-bottom: 2px solid #ffc107;
+    }
+    tr.primeiro-lugar td:first-child { border-left: 2px solid #ffc107; }
+    tr.primeiro-lugar td:last-child  { border-right: 2px solid #ffc107; }
+
     .num { text-align:right; }
     .centro { text-align:center; }
 
@@ -395,6 +550,26 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
                     font-size:14px; }
     .btn-imprimir:hover { background:#0053b3; }
 
+    .btn-topo {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        width: 46px;
+        height: 46px;
+        border-radius: 50%;
+        background: #0069d9;
+        color: #fff;
+        border: none;
+        box-shadow: 0 4px 12px rgba(0,0,0,.25);
+        cursor: pointer;
+        font-size: 20px;
+        line-height: 1;
+        display: none;
+        z-index: 100;
+    }
+    .btn-topo:hover { background: #0053b3; }
+    .btn-topo.visivel { display: block; }
+
     .aviso { background:#fff3cd; border-left:5px solid #ffc107;
              padding:12px 16px; border-radius:6px; margin-bottom:20px; }
 
@@ -402,13 +577,35 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
         .no-print { display:none !important; }
         body { background:#fff; margin:0; }
         .cand-bloco { box-shadow:none; page-break-inside: avoid; }
+        .cand-bloco.recolhido .cand-body { display:block !important; }
         .cand-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        tr.primeiro-lugar td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     }
 </style>
 </head>
 <body>
 
 <a href="index.php" class="link-voltar no-print">&larr; Voltar ao menu</a>
+
+<!-- ============================================================
+     CARD DO USUÁRIO LOGADO
+     ============================================================ -->
+<div class="barra-usuario no-print <?= $isAdmin ? ($__ehSuper ? 'super' : 'admin') : '' ?>">
+    <span>
+        👤 <span class="saudacao">Olá,</span>
+        <span class="nome-user"><?= htmlspecialchars($__u['nome'] ?? '—') ?></span>
+    </span>
+    <span class="perfil-tag <?= htmlspecialchars($__classePerfil) ?>">
+        <?= htmlspecialchars($__rotuloPerfil) ?>
+    </span>
+    <?php if ($isAdmin): ?>
+        <span class="<?= $__ehSuper ? 'badge-super' : 'badge-admin' ?>">
+            <?= $__ehSuper ? '🔓 superadmin' : '🔓 administrador' ?>
+        </span>
+    <?php else: ?>
+        <span class="badge-visitante">👁️ visitante</span>
+    <?php endif; ?>
+</div>
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
     <div>
@@ -453,6 +650,21 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
     </div>
     <?php endif; ?>
 
+    <?php if ($listaRegioes): ?>
+    <div class="campo">
+        <label for="f-regiao">Região</label>
+        <select name="regiao" id="f-regiao">
+            <option value="0">— Todas as regiões —</option>
+            <?php foreach ($listaRegioes as $r): ?>
+                <option value="<?= (int)$r['id'] ?>"
+                    <?= $filtroRegiao === (int)$r['id'] ? 'selected' : '' ?>>
+                    <?= htmlspecialchars($r['nome']) ?>
+                </option>
+            <?php endforeach; ?>
+        </select>
+    </div>
+    <?php endif; ?>
+
     <div class="campo" style="max-width:200px;">
         <label for="f-status">Status</label>
         <select name="status" id="f-status">
@@ -482,21 +694,34 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
     <?php if ($filtroCand !== ''): ?>
         <span class="badge-filtro">
             🗳 <?= htmlspecialchars($filtroCand) ?>
-            <a class="x" href="?<?= http_build_query(['cand' => '', 'status' => $filtroStatus, 'busca' => $busca]) ?>">×</a>
+            <a class="x" href="?<?= http_build_query(['cand' => '', 'regiao' => $filtroRegiao, 'status' => $filtroStatus, 'busca' => $busca]) ?>">×</a>
+        </span>
+    <?php endif; ?>
+
+    <?php if ($filtroRegiao > 0): ?>
+        <?php
+        $nomeRegFiltro = '';
+        foreach ($listaRegioes as $r) {
+            if ((int)$r['id'] === $filtroRegiao) { $nomeRegFiltro = $r['nome']; break; }
+        }
+        ?>
+        <span class="badge-filtro">
+            🗺 <?= htmlspecialchars($nomeRegFiltro) ?>
+            <a class="x" href="?<?= http_build_query(['cand' => $filtroCand, 'regiao' => 0, 'status' => $filtroStatus, 'busca' => $busca]) ?>">×</a>
         </span>
     <?php endif; ?>
 
     <?php if ($filtroStatus !== 'todos'): ?>
         <span class="badge-filtro">
             <?= $filtroStatus === 'ativos' ? '🟢 Só ativos' : '⚪ Só inativos' ?>
-            <a class="x" href="?<?= http_build_query(['cand' => $filtroCand, 'status' => 'todos', 'busca' => $busca]) ?>">×</a>
+            <a class="x" href="?<?= http_build_query(['cand' => $filtroCand, 'regiao' => $filtroRegiao, 'status' => 'todos', 'busca' => $busca]) ?>">×</a>
         </span>
     <?php endif; ?>
 
     <?php if ($busca !== ''): ?>
         <span class="badge-filtro">
             🔎 <?= htmlspecialchars($busca) ?>
-            <a class="x" href="?<?= http_build_query(['cand' => $filtroCand, 'status' => $filtroStatus, 'busca' => '']) ?>">×</a>
+            <a class="x" href="?<?= http_build_query(['cand' => $filtroCand, 'regiao' => $filtroRegiao, 'status' => $filtroStatus, 'busca' => '']) ?>">×</a>
         </span>
     <?php endif; ?>
 </div>
@@ -533,6 +758,14 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
     </div>
 </div>
 
+<!-- Botões de expandir/recolher -->
+<?php if ($porCandidato): ?>
+<div class="barra-expandir no-print">
+    <button type="button" onclick="expandirTodos(true)">▼ Expandir todos</button>
+    <button type="button" onclick="expandirTodos(false)">▶ Recolher todos</button>
+</div>
+<?php endif; ?>
+
 <!-- ============================================================
      UM BLOCO POR CANDIDATO
      ============================================================ -->
@@ -543,11 +776,12 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
 <?php else: ?>
     <?php foreach ($porCandidato as $cand => $lista):
         $t = $totPorCand[$cand];
+        $slug = preg_replace('/[^A-Za-z0-9]+/', '-', $cand);
     ?>
-        <div class="cand-bloco">
+        <div class="cand-bloco" id="bloco-<?= htmlspecialchars($slug) ?>">
 
-            <!-- Cabeçalho do candidato -->
-            <div class="cand-header">
+            <!-- Cabeçalho do candidato (clicável) -->
+            <div class="cand-header" onclick="toggleBloco(this)">
                 <div class="titulo">
                     <span class="ico">🗳</span>
                     <?php if ($cand === '(Sem candidato)'): ?>
@@ -555,6 +789,7 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
                     <?php else: ?>
                         <?= htmlspecialchars($cand) ?>
                     <?php endif; ?>
+                    <span class="seta">▼</span>
                 </div>
 
                 <div class="resumo">
@@ -581,7 +816,7 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
                 </div>
             </div>
 
-            <!-- Tabela de coordenadores do candidato -->
+            <!-- Tabela de coordenadores -->
             <div class="cand-body">
                 <table>
                     <thead>
@@ -600,7 +835,6 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
                     </thead>
                     <tbody>
                         <?php
-                        // Ordena coordenadores do candidato por % (decrescente)
                         usort($lista, function ($a, $b) {
                             return ($b['pct'] ?? -1) <=> ($a['pct'] ?? -1);
                         });
@@ -613,8 +847,9 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
                             $cls = $pct >= 100 ? 'ok' : ($pct >= 70 ? 'med' : 'ruim');
                             if ($c['pct'] === null) $cls = 'zero';
                             $dif = (int)$c['diferenca'];
+                            $linhaCls = $pos === 1 ? 'primeiro-lugar' : '';
                         ?>
-                            <tr>
+                            <tr class="<?= $linhaCls ?>">
                                 <td class="centro"><span class="medalha"><?= $med ?></span></td>
                                 <td><strong><?= htmlspecialchars($c['nome']) ?></strong></td>
                                 <td class="centro"><?= fmtNum($c['qtd_zonas']) ?></td>
@@ -693,9 +928,7 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
         </div>
     <?php endforeach; ?>
 
-    <!-- ============================================================
-         TOTAL GERAL (quando houver mais de um candidato)
-         ============================================================ -->
+    <!-- Total geral -->
     <?php if (count($porCandidato) > 1): ?>
         <div class="cand-bloco" style="background:#f6f0ff;">
             <div class="cand-header" style="background:linear-gradient(90deg, #333, #555);">
@@ -733,6 +966,48 @@ $temFiltro = ($filtroCand !== '' || $filtroStatus !== 'todos' || $busca !== '');
 <p style="font-size:11px; color:#888; margin-top:30px; text-align:center;">
     Relatório gerado automaticamente · <?= date('d/m/Y \à\s H:i') ?>
 </p>
+
+<!-- Botão flutuante voltar ao topo -->
+<button class="btn-topo no-print" id="btnTopo" onclick="window.scrollTo({top:0, behavior:'smooth'})" title="Voltar ao topo">
+    ↑
+</button>
+
+<script>
+    // ============================================================
+    // Expandir / recolher blocos
+    // ============================================================
+    function toggleBloco(header) {
+        const bloco = header.parentElement;
+        bloco.classList.toggle('recolhido');
+    }
+    function expandirTodos(expandir) {
+        document.querySelectorAll('.cand-bloco').forEach(b => {
+            b.classList.toggle('recolhido', !expandir);
+        });
+    }
+
+    // ============================================================
+    // Botão "voltar ao topo" — aparece após rolar 300px
+    // ============================================================
+    (function () {
+        const btn = document.getElementById('btnTopo');
+        if (!btn) return;
+        window.addEventListener('scroll', function () {
+            btn.classList.toggle('visivel', window.scrollY > 300);
+        });
+    })();
+
+    // ============================================================
+    // Atalho: pressionar "e" expande/recolhe todos
+    // ============================================================
+    document.addEventListener('keydown', function (e) {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+        if (e.key === 'e' || e.key === 'E') {
+            const algumRecolhido = document.querySelector('.cand-bloco.recolhido');
+            expandirTodos(!!algumRecolhido);
+        }
+    });
+</script>
 
 </body>
 </html>

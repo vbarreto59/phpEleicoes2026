@@ -3,6 +3,7 @@
 // cadastrar_coordenadores.php
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
+require_once __DIR__ . '/auth.php';
 
 $pdo = new PDO(
     "mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4",
@@ -12,6 +13,34 @@ $pdo = new PDO(
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]
 );
+
+// ============================================================
+// USUÁRIO LOGADO
+// ============================================================
+$__u = usuarioLogado();
+
+$__loginLower = mb_strtolower(trim((string)($__u['login'] ?? '')), 'UTF-8');
+$__nomeLower  = mb_strtolower(trim((string)($__u['nome']  ?? '')), 'UTF-8');
+$__perfil     = $__u['perfil'] ?? 'consulta';
+
+$__loginsDono = ['barreto', 'vbarreto'];
+$__nomesDono  = ['barreto', 'valter barreto'];
+
+$__ehDono = in_array($__loginLower, $__loginsDono, true)
+         || in_array($__nomeLower,  $__nomesDono,  true);
+
+$__ehSuper      = ($__perfil === 'superadmin');
+$__ehAdminNivel = ($__perfil === 'admin');
+$__ehAdmin      = ($__ehSuper || $__ehAdminNivel);
+
+$isAdmin = ($__ehAdmin && $__ehDono);
+
+$__rotuloPerfil = function_exists('rotuloPerfil')
+                    ? rotuloPerfil($__perfil)
+                    : strtoupper($__perfil);
+$__classePerfil = function_exists('classePerfil')
+                    ? classePerfil($__perfil)
+                    : ('perfil-' . $__perfil);
 
 // ============================================================
 // DETECÇÃO DE COLUNAS
@@ -68,6 +97,10 @@ if (isset($_GET['ajax'])) {
         $acao = $_GET['ajax'];
 
         if ($acao === 'salvar') {
+            if (!$__ehAdmin) {
+                throw new Exception('Sem permissão para salvar.');
+            }
+
             $id            = (int)($_POST['id'] ?? 0);
             $candidatoNome = trim($_POST['nomeCandidatoResp'] ?? '');
             $nome          = trim($_POST['nome'] ?? '');
@@ -172,6 +205,10 @@ if (isset($_GET['ajax'])) {
         }
 
         if ($acao === 'excluir') {
+            if (!$isAdmin) {
+                throw new Exception('Sem permissão para excluir.');
+            }
+
             $id = (int)($_POST['id'] ?? 0);
             if ($id <= 0) throw new Exception('ID inválido.');
 
@@ -424,11 +461,76 @@ $totalPct = $totalVotosEsperados > 0
 
     .link-voltar { display:inline-block; margin-bottom:15px; color:#0069d9; text-decoration:none; }
     .link-voltar:hover { text-decoration:underline; }
+
+    /* ============================================================
+       CARD DO USUÁRIO LOGADO
+       ============================================================ */
+    .barra-usuario {
+        background:#fff; padding:10px 16px; border-radius:6px;
+        box-shadow:0 1px 3px rgba(0,0,0,.08);
+        display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+        font-size:13.5px; margin-bottom:18px;
+        border-left:5px solid #6c757d;
+    }
+    .barra-usuario.admin { border-left-color:#ffc107; }
+    .barra-usuario.super { border-left-color:#dc3545; }
+    .barra-usuario .nome-user { font-weight:bold; color:#333; }
+    .barra-usuario .saudacao { color:#888; font-weight:normal; margin-right:3px; }
+
+    .perfil-tag {
+        font-size:10px; padding:2px 8px; border-radius:8px;
+        font-weight:bold; letter-spacing:.5px;
+        background:#e6f0fa; color:#0069d9;
+    }
+    .perfil-tag.perfil-super    { background:#dc3545; color:#fff; }
+    .perfil-tag.perfil-admin    { background:#fff3cd; color:#856404; }
+    .perfil-tag.perfil-consulta { background:#e6f0fa; color:#0069d9; }
+
+    .badge-admin {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#fff3cd; color:#856404;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
+    .badge-super {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#dc3545; color:#fff;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
+    .badge-visitante {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#e9ecef; color:#495057;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
 </style>
 </head>
 <body>
 
 <a href="index.php" class="link-voltar">&larr; Voltar ao menu</a>
+
+<!-- ============================================================
+     CARD DO USUÁRIO LOGADO
+     ============================================================ -->
+<div class="barra-usuario <?= $isAdmin ? ($__ehSuper ? 'super' : 'admin') : '' ?>">
+    <span>
+        👤 <span class="saudacao">Olá,</span>
+        <span class="nome-user"><?= htmlspecialchars($__u['nome'] ?? '—') ?></span>
+    </span>
+    <span class="perfil-tag <?= htmlspecialchars($__classePerfil) ?>">
+        <?= htmlspecialchars($__rotuloPerfil) ?>
+    </span>
+    <?php if ($isAdmin): ?>
+        <span class="<?= $__ehSuper ? 'badge-super' : 'badge-admin' ?>">
+            <?= $__ehSuper ? '🔓 superadmin' : '🔓 administrador' ?>
+        </span>
+    <?php elseif ($__ehAdmin && !$__ehDono): ?>
+        <span class="badge-visitante">👁️ admin (não autorizado a excluir)</span>
+    <?php else: ?>
+        <span class="badge-visitante">👁️ visitante</span>
+    <?php endif; ?>
+</div>
 
 <h1>Coordenadores</h1>
 
@@ -498,9 +600,11 @@ $totalPct = $totalVotosEsperados > 0
     </div>
 </div>
 
+<?php if ($__ehAdmin): ?>
 <div style="margin-bottom:15px;">
     <button type="button" class="btn btn-novo" id="btn-novo">+ Novo Coordenador</button>
 </div>
+<?php endif; ?>
 
 <table>
     <thead>
@@ -582,11 +686,18 @@ $totalPct = $totalVotosEsperados > 0
                             : '<span class="badge badge-inativo">Inativo</span>' ?>
                     </td>
                     <td>
-                        <button type="button" class="btn btn-editar" data-id="<?= (int)$c['id'] ?>">Editar</button>
-                        <button type="button" class="btn btn-excluir"
-                                data-id="<?= (int)$c['id'] ?>"
-                                data-nome="<?= htmlspecialchars($c['nome']) ?>"
-                                data-liderancas="<?= (int)$c['qtd_liderancas'] ?>">Excluir</button>
+                        <?php if ($__ehAdmin): ?>
+                            <button type="button" class="btn btn-editar" data-id="<?= (int)$c['id'] ?>">Editar</button>
+                        <?php endif; ?>
+                        <?php if ($isAdmin): ?>
+                            <button type="button" class="btn btn-excluir"
+                                    data-id="<?= (int)$c['id'] ?>"
+                                    data-nome="<?= htmlspecialchars($c['nome']) ?>"
+                                    data-liderancas="<?= (int)$c['qtd_liderancas'] ?>">Excluir</button>
+                        <?php endif; ?>
+                        <?php if (!$__ehAdmin && !$isAdmin): ?>
+                            <span class="vazio">—</span>
+                        <?php endif; ?>
                     </td>
                 </tr>
             <?php endforeach; ?>
@@ -685,9 +796,11 @@ $totalPct = $totalVotosEsperados > 0
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/i18n/pt-BR.js"></script>
 
 <script>
-    const COORDENADORES = <?= json_encode($coordenadores, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
-    const TEM_CAND = <?= $temCandidatoCoord ? 'true' : 'false' ?>;
-    const FILTRO_CAND = <?= json_encode($filtroCandidato) ?>;
+    const COORDENADORES = <?= json_encode($coordenadores, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    const TEM_CAND      = <?= $temCandidatoCoord ? 'true' : 'false' ?>;
+    const FILTRO_CAND   = <?= json_encode($filtroCandidato, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    const PODE_EDITAR   = <?= $__ehAdmin ? 'true' : 'false' ?>;
+    const PODE_EXCLUIR  = <?= $isAdmin   ? 'true' : 'false' ?>;
 
     (function () {
         const $modal  = jQuery('#modal');
@@ -749,10 +862,12 @@ $totalPct = $totalVotosEsperados > 0
         jQuery('#btn-novo').on('click', () => abrirModal(0));
 
         jQuery(document).on('click', '.btn-editar', function () {
+            if (!PODE_EDITAR) return;
             abrirModal(parseInt(jQuery(this).data('id')));
         });
 
         jQuery(document).on('click', '.btn-excluir', function () {
+            if (!PODE_EXCLUIR) return;
             const id   = parseInt(jQuery(this).data('id'));
             const nome = jQuery(this).data('nome');
             const qtd  = parseInt(jQuery(this).data('liderancas')) || 0;
@@ -776,6 +891,10 @@ $totalPct = $totalVotosEsperados > 0
 
         $form.on('submit', function (e) {
             e.preventDefault();
+            if (!PODE_EDITAR) {
+                $msg.text('✘ Sem permissão.').css('color', '#dc3545');
+                return;
+            }
             $msg.text('Salvando...').css('color', '#6c757d');
             const fd = new FormData(this);
             fd.delete('zonas[]');

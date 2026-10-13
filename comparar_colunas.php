@@ -1,8 +1,10 @@
 <?php
 // ------------------------------------------------------------
-// consultar.php
+// comparar_colunas.php
+//
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
+require_once __DIR__ . '/auth.php';
 
 $pdo = new PDO(
     "mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4",
@@ -14,41 +16,39 @@ $pdo = new PDO(
     ]
 );
 
+// ------------------------------------------------------------
+// Sessão
+// ------------------------------------------------------------
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+$__u = [
+    'id'    => $_SESSION['usuario_id']    ?? null,
+    'nome'  => $_SESSION['usuario_nome']  ?? '—',
+    'login' => $_SESSION['usuario_login'] ?? '',
+];
+
+$perfilSessao = strtolower(trim((string)($_SESSION['usuario_perfil'] ?? '')));
+
+$__ehSuper = in_array($perfilSessao, ['super', 'superadmin', 'super_admin'], true);
+$__ehAdmin = $__ehSuper || in_array($perfilSessao, ['admin', 'administrador', 'adm'], true);
+$__ehDono  = $__ehAdmin;
+$isAdmin   = $__ehAdmin;
+
+if ($__ehSuper) {
+    $__classePerfil = 'super';
+    $__rotuloPerfil = 'SUPERADMIN';
+} elseif ($__ehAdmin) {
+    $__classePerfil = 'admin';
+    $__rotuloPerfil = 'ADMIN';
+} else {
+    $__classePerfil = 'visitante';
+    $__rotuloPerfil = 'VISITANTE';
+}
+
 $LIMITE_RESULTADO = 5000;
 $MAX_CANDIDATOS   = 3;
-
-// ============================================================
-// Normalização de nome de município
-//   - minúsculas
-//   - remove acentos
-//   - colapsa espaços múltiplos
-//   Isso faz "RECIFE" casar com "Recife" e "ABREU E LIMA" com "Abreu e Lima".
-// ============================================================
-function normalizarMun($s) {
-    $s = trim((string)$s);
-    $s = mb_strtolower($s, 'UTF-8');
-    $s = strtr($s, [
-        'á'=>'a','à'=>'a','ã'=>'a','â'=>'a','ä'=>'a',
-        'é'=>'e','è'=>'e','ê'=>'e','ë'=>'e',
-        'í'=>'i','ì'=>'i','î'=>'i','ï'=>'i',
-        'ó'=>'o','ò'=>'o','õ'=>'o','ô'=>'o','ö'=>'o',
-        'ú'=>'u','ù'=>'u','û'=>'u','ü'=>'u',
-        'ç'=>'c','ñ'=>'n',
-    ]);
-    $s = preg_replace('/\s+/', ' ', $s);
-    return $s;
-}
-
-function acharRegiao($nome, array $mapaExato, array $mapaNorm) {
-    if (isset($mapaExato[$nome])) {
-        return $mapaExato[$nome];
-    }
-    $k = normalizarMun($nome);
-    if (isset($mapaNorm[$k])) {
-        return $mapaNorm[$k];
-    }
-    return 'Sem região';
-}
 
 // ------------------------------------------------------------
 // Endpoints AJAX (cascata)
@@ -58,20 +58,9 @@ if (isset($_GET['action'])) {
 
     try {
         if ($_GET['action'] === 'municipios') {
-            $regiao = $_GET['regiao'] ?? '';
-            if ($regiao !== '') {
-                $stmt = $pdo->prepare(
-                    "SELECT DISTINCT mr.nomeMunicipio
-                     FROM municipio_regiao mr
-                     WHERE mr.regiao_id = :r
-                     ORDER BY mr.nomeMunicipio"
-                );
-                $stmt->execute([':r' => $regiao]);
-            } else {
-                $stmt = $pdo->query(
-                    "SELECT DISTINCT nomeMunicipio FROM votos ORDER BY nomeMunicipio"
-                );
-            }
+            $stmt = $pdo->query(
+                "SELECT DISTINCT nomeMunicipio FROM votos ORDER BY nomeMunicipio"
+            );
             echo json_encode($stmt->fetchAll(PDO::FETCH_COLUMN));
             exit;
         }
@@ -88,20 +77,6 @@ if (isset($_GET['action'])) {
             echo json_encode($stmt->fetchAll(PDO::FETCH_COLUMN));
             exit;
         }
-
-        if ($_GET['action'] === 'secoes') {
-            $municipio = $_GET['municipio'] ?? '';
-            $zona      = $_GET['zona'] ?? '';
-            $stmt = $pdo->prepare(
-                "SELECT DISTINCT numeroSecao
-                 FROM votos
-                 WHERE nomeMunicipio = :m AND numeroZona = :z
-                 ORDER BY numeroSecao"
-            );
-            $stmt->execute([':m' => $municipio, ':z' => $zona]);
-            echo json_encode($stmt->fetchAll(PDO::FETCH_COLUMN));
-            exit;
-        }
     } catch (Exception $e) {
         http_response_code(500);
         echo json_encode(['erro' => $e->getMessage()]);
@@ -112,11 +87,10 @@ if (isset($_GET['action'])) {
 // ------------------------------------------------------------
 // Filtros recebidos
 // ------------------------------------------------------------
-$regiao    = $_GET['regiao']    ?? '';
-$municipio = $_GET['municipio'] ?? '';
-$zona      = $_GET['zona']      ?? '';
-$secao     = $_GET['secao']     ?? '';
-$cargo     = $_GET['cargo']     ?? '';
+$municipio   = $_GET['municipio']   ?? '';
+$zona        = $_GET['zona']        ?? '';
+$cargo       = $_GET['cargo']       ?? '';
+$exibirZonas = isset($_GET['exibir_zonas']) && $_GET['exibir_zonas'] === '1';
 
 $candidatosSelecionados = $_GET['candidato'] ?? [];
 if (!is_array($candidatosSelecionados)) {
@@ -138,15 +112,6 @@ if (count($candidatosSelecionados) > $MAX_CANDIDATOS) {
 $filtros = [];
 $params  = [];
 
-if ($regiao !== '') {
-    $filtros[] = "EXISTS (
-        SELECT 1 FROM municipio_regiao mr
-         WHERE mr.nomeMunicipio COLLATE utf8mb4_general_ci
-             = v.nomeMunicipio  COLLATE utf8mb4_general_ci
-           AND mr.regiao_id = ?
-    )";
-    $params[] = (int)$regiao;
-}
 if ($municipio !== '') {
     $filtros[] = "v.nomeMunicipio = ?";
     $params[] = $municipio;
@@ -154,10 +119,6 @@ if ($municipio !== '') {
 if ($zona !== '') {
     $filtros[] = "v.numeroZona = ?";
     $params[] = (int)$zona;
-}
-if ($secao !== '') {
-    $filtros[] = "v.numeroSecao = ?";
-    $params[] = (int)$secao;
 }
 if ($candidatosSelecionados) {
     $qtd = count($candidatosSelecionados);
@@ -176,45 +137,43 @@ $where     = $filtros ? 'WHERE ' . implode(' AND ', $filtros) : '';
 $temFiltro = (bool)$filtros;
 
 // ------------------------------------------------------------
-// Mapa município → região (com chave crua + normalizada)
-// ------------------------------------------------------------
-$mapaRegiao     = [];
-$mapaRegiaoNorm = [];
-
-$stmtMapa = $pdo->query("
-    SELECT mr.nomeMunicipio, COALESCE(r.nome, 'Sem região') AS regiao
-      FROM municipio_regiao mr
-      LEFT JOIN regioes r ON r.id = mr.regiao_id
-");
-foreach ($stmtMapa->fetchAll() as $row) {
-    $mapaRegiao[$row['nomeMunicipio']] = $row['regiao'];
-    $mapaRegiaoNorm[normalizarMun($row['nomeMunicipio'])] = $row['regiao'];
-}
-
-// ------------------------------------------------------------
 // Consulta principal
 // ------------------------------------------------------------
 $linhasBrutas  = [];
 $truncado      = false;
 $totalGeral    = 0;
-$totalSecoes   = 0;
+$totalLinhas   = 0;
 $totalPorCand  = [];
 
 if ($temFiltro) {
-    $sql = "SELECT
-                v.nomeMunicipio,
-                v.numeroZona,
-                v.numeroSecao,
-                v.nomeCargoPerg,
-                v.nomeCandidatoResp,
-                SUM(v.qtdVotos) AS total
-            FROM votos v
-            $where
-            GROUP BY v.nomeMunicipio, v.numeroZona, v.numeroSecao,
-                     v.nomeCargoPerg, v.nomeCandidatoResp
-            ORDER BY v.nomeMunicipio, v.numeroZona, v.numeroSecao,
-                     v.nomeCandidatoResp
-            LIMIT " . ($LIMITE_RESULTADO + 1);
+    if ($exibirZonas) {
+        $sql = "SELECT
+                    v.nomeMunicipio,
+                    v.numeroZona,
+                    v.nomeCargoPerg,
+                    v.nomeCandidatoResp,
+                    SUM(v.qtdVotos) AS total
+                FROM votos v
+                $where
+                GROUP BY v.nomeMunicipio, v.numeroZona,
+                         v.nomeCargoPerg, v.nomeCandidatoResp
+                ORDER BY v.nomeMunicipio, v.numeroZona,
+                         v.nomeCandidatoResp
+                LIMIT " . ($LIMITE_RESULTADO + 1);
+    } else {
+        $sql = "SELECT
+                    v.nomeMunicipio,
+                    v.nomeCargoPerg,
+                    v.nomeCandidatoResp,
+                    SUM(v.qtdVotos) AS total
+                FROM votos v
+                $where
+                GROUP BY v.nomeMunicipio,
+                         v.nomeCargoPerg, v.nomeCandidatoResp
+                ORDER BY v.nomeMunicipio,
+                         v.nomeCandidatoResp
+                LIMIT " . ($LIMITE_RESULTADO + 1);
+    }
 
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
@@ -227,21 +186,31 @@ if ($temFiltro) {
 }
 
 // ------------------------------------------------------------
-// PIVOT — agrupa por (município, zona, seção)
+// PIVOT — por município (padrão) ou município + zona
 // ------------------------------------------------------------
 $pivot = [];
 foreach ($linhasBrutas as $r) {
-    $chave = $r['nomeMunicipio'] . '|' . $r['numeroZona'] . '|' . $r['numeroSecao'];
+    if ($exibirZonas) {
+        $chave = $r['nomeMunicipio'] . '|' . $r['numeroZona'];
 
-    if (!isset($pivot[$chave])) {
-        $pivot[$chave] = [
-            'municipio'  => $r['nomeMunicipio'],
-            'zona'       => (int)$r['numeroZona'],
-            'secao'      => (int)$r['numeroSecao'],
-            'regiao'     => acharRegiao($r['nomeMunicipio'], $mapaRegiao, $mapaRegiaoNorm),
-            'cargo'      => $r['nomeCargoPerg'],
-            'votos'      => [],
-        ];
+        if (!isset($pivot[$chave])) {
+            $pivot[$chave] = [
+                'municipio' => $r['nomeMunicipio'],
+                'zona'      => (int)$r['numeroZona'],
+                'cargo'     => $r['nomeCargoPerg'],
+                'votos'     => [],
+            ];
+        }
+    } else {
+        $chave = $r['nomeMunicipio'];
+
+        if (!isset($pivot[$chave])) {
+            $pivot[$chave] = [
+                'municipio' => $r['nomeMunicipio'],
+                'cargo'     => $r['nomeCargoPerg'],
+                'votos'     => [],
+            ];
+        }
     }
 
     $cand = $r['nomeCandidatoResp'];
@@ -253,7 +222,7 @@ foreach ($linhasBrutas as $r) {
     $totalGeral += $tot;
 }
 
-$totalSecoes = count($pivot);
+$totalLinhas = count($pivot);
 
 // ------------------------------------------------------------
 // ESTATÍSTICAS POR CANDIDATO
@@ -316,10 +285,13 @@ foreach ($candidatosCols as $i => $nome) {
     $coresCandidato[$nome] = $paleta[$i % count($paleta)];
 }
 
-// Ordena o pivot
-uasort($pivot, function ($a, $b) {
-    return [$a['regiao'], $a['municipio'], $a['zona'], $a['secao']]
-       <=> [$b['regiao'], $b['municipio'], $b['zona'], $b['secao']];
+// Ordena o pivot — apenas município e (opcional) zona
+uasort($pivot, function ($a, $b) use ($exibirZonas) {
+    if ($exibirZonas) {
+        return [$a['municipio'], $a['zona'] ?? 0]
+           <=> [$b['municipio'], $b['zona'] ?? 0];
+    }
+    return [$a['municipio']] <=> [$b['municipio']];
 });
 
 // ------------------------------------------------------------
@@ -329,25 +301,12 @@ $totalBanco = (int)$pdo->query(
     "SELECT COALESCE(SUM(qtdVotos),0) FROM votos"
 )->fetchColumn();
 
-$totalRegioes = (int)$pdo->query(
-    "SELECT COUNT(DISTINCT regiao_id) FROM municipio_regiao"
-)->fetchColumn();
-
 // ------------------------------------------------------------
 // Listas para os selects
 // ------------------------------------------------------------
-$regioes = $pdo->query(
-    "SELECT id, codigo, nome FROM regioes ORDER BY nome"
-)->fetchAll();
-
-$municipios = array_keys($mapaRegiao);
-if (!$municipios) {
-    $municipios = $pdo->query(
-        "SELECT DISTINCT nomeMunicipio FROM votos ORDER BY nomeMunicipio"
-    )->fetchAll(PDO::FETCH_COLUMN);
-} else {
-    sort($municipios, SORT_NATURAL | SORT_FLAG_CASE);
-}
+$municipios = $pdo->query(
+    "SELECT DISTINCT nomeMunicipio FROM votos ORDER BY nomeMunicipio"
+)->fetchAll(PDO::FETCH_COLUMN);
 
 $candidatos = $pdo->query(
     "SELECT DISTINCT nomeCandidatoResp FROM votos ORDER BY nomeCandidatoResp"
@@ -358,34 +317,49 @@ $cargos = $pdo->query(
 )->fetchAll(PDO::FETCH_COLUMN);
 
 $debug = isset($_GET['debug']) && $_GET['debug'] === '1';
-
-// ------------------------------------------------------------
-// DEBUG: lista municípios sem região
-// ------------------------------------------------------------
-$municipiosSemRegiao = [];
-if ($debug) {
-    $stmt = $pdo->query("
-        SELECT DISTINCT nomeMunicipio FROM votos ORDER BY nomeMunicipio
-    ");
-    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $m) {
-        $reg = acharRegiao($m, $mapaRegiao, $mapaRegiaoNorm);
-        if ($reg === 'Sem região') {
-            $municipiosSemRegiao[] = $m;
-        }
-    }
-}
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<title>Comparação de Candidatos por Seção</title>
+<title>Comparação de Candidatos por Município/Zona</title>
 
 <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
 
 <style>
     body { font-family: Arial, sans-serif; margin: 20px; background:#f7f7f7; color:#333; }
     h1 { color:#333; }
+
+    /* ===== Barra de usuário ===== */
+    .barra-usuario {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: #fff;
+        padding: 10px 16px;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,.08);
+        margin-bottom: 18px;
+        font-size: 13px;
+    }
+    .barra-usuario.super { border-left: 5px solid #6f42c1; }
+    .barra-usuario.admin { border-left: 5px solid #0d6efd; }
+    .nome-user { font-weight: 600; }
+    .perfil-tag {
+        background: #e9ecef; color: #495057;
+        padding: 2px 10px; border-radius: 12px;
+        font-size: 11px; font-weight: 600; text-transform: uppercase;
+    }
+    .perfil-tag.admin { background:#0d6efd; color:#fff; }
+    .perfil-tag.super { background:#6f42c1; color:#fff; }
+    .badge-super     { background:#6f42c1; color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .badge-admin     { background:#0d6efd; color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .badge-visitante { background:#e9ecef; color:#495057; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .link-debug {
+        margin-left: auto; color: #6c757d;
+        text-decoration: none; font-size: 12px;
+    }
+    .link-debug:hover { color: #0d6efd; text-decoration: underline; }
 
     .kpis { display:flex; gap:15px; flex-wrap:wrap; margin-bottom:18px; }
     .kpi {
@@ -446,6 +420,31 @@ if ($debug) {
     .btn-limpar:hover { background:#5a6268; }
     .filtros { display:flex; flex-wrap:wrap; align-items:center; }
 
+    /* Toggle "Exibir zonas" */
+    .chk-toggle {
+        display:inline-flex;
+        align-items:center;
+        gap:8px;
+        background:#f1f5fb;
+        border:1px solid #cdd9e8;
+        padding:7px 14px;
+        border-radius:6px;
+        cursor:pointer;
+        font-weight:600;
+        font-size:13px;
+        color:#0053b3;
+        margin:4px 10px 4px 0;
+        user-select:none;
+        transition: background .15s;
+    }
+    .chk-toggle:hover { background:#e4ecf7; }
+    .chk-toggle input { margin:0; transform: scale(1.1); cursor:pointer; }
+    .chk-toggle.ativo {
+        background:#0069d9;
+        color:#fff;
+        border-color:#0053b3;
+    }
+
     .select2-container { margin: 4px 10px 4px 0; }
     .select2-container--default .select2-selection--multiple {
         min-height: 38px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; background:#fff;
@@ -483,7 +482,6 @@ if ($debug) {
     }
     table.tabela-comp tbody tr:nth-child(even) td { background: #fafafa; }
     table.tabela-comp tbody tr:hover td { background: #f4f8ff; }
-    table.tabela-comp td.col-regiao { font-weight:bold; color:#0053b3; white-space:nowrap; }
     table.tabela-comp td.col-num {
         text-align: right; font-family: 'Courier New', monospace;
         font-variant-numeric: tabular-nums;
@@ -553,29 +551,46 @@ if ($debug) {
 </head>
 <body>
 
-<h1>Comparação de Candidatos — Seção a Seção</h1>
+<h1>Comparação de Candidatos — por Município / Zona</h1>
+
+<div class="barra-usuario <?= $isAdmin ? ($__ehSuper ? 'super' : 'admin') : '' ?>">
+    <span>👤 <span class="nome-user"><?= htmlspecialchars($__u['nome'] ?? '—') ?></span></span>
+    <span class="perfil-tag <?= htmlspecialchars($__classePerfil) ?>">
+        <?= htmlspecialchars($__rotuloPerfil) ?>
+    </span>
+    <?php if ($isAdmin): ?>
+        <span class="<?= $__ehSuper ? 'badge-super' : 'badge-admin' ?>">
+            <?= $__ehSuper ? '🔓 superadmin' : '🔓 administrador' ?>
+        </span>
+    <?php else: ?>
+        <span class="badge-visitante">👁️ visitante</span>
+    <?php endif; ?>
+
+    <a class="link-debug" href="?debug_sessao=1<?= $temFiltro ? '&' . http_build_query($_GET) : '' ?>">
+        🔍 ver sessão
+    </a>
+</div>
+
+<?php if (isset($_GET['debug_sessao']) && $_GET['debug_sessao'] === '1'): ?>
+    <div class="debug-box">
+        <h3>🔍 SESSÃO</h3>
+<pre style="margin:0; white-space:pre-wrap;">
+<?php print_r($_SESSION); ?>
+</pre>
+    </div>
+<?php endif; ?>
 
 <?php if ($debug): ?>
     <div class="debug-box">
         <h3>🔍 DEBUG</h3>
 <pre style="margin:0; white-space:pre-wrap;">
+<span class="destaque">Exibir zonas:</span> <?= $exibirZonas ? 'SIM' : 'NÃO' ?>
+
 <span class="destaque">Candidatos:</span> <?= htmlspecialchars(implode(', ', $candidatosSelecionados)) ?>
 
-<span class="destaque">Seções no pivot:</span> <?= $totalSecoes ?>
+<span class="destaque">Linhas no pivot:</span> <?= $totalLinhas ?>
 
 <span class="destaque">Total de votos:</span> <?= number_format($totalGeral, 0, ',', '.') ?>
-
-<span class="destaque">Municípios cadastrados em municipio_regiao:</span> <?= count($mapaRegiao) ?>
-
-<span class="destaque">Municípios SEM região (não casaram):</span>
-<?php if ($municipiosSemRegiao): ?>
-<?php foreach ($municipiosSemRegiao as $m): ?>
-  <span class="aviso">✘ <?= htmlspecialchars($m) ?></span>
-
-<?php endforeach; ?>
-<?php else: ?>
-  <span class="ok">✔ Todos os municípios casaram!</span>
-<?php endif; ?>
 
 <span class="destaque">Stats por candidato:</span>
 <?php foreach ($statsCand as $c => $s): ?>
@@ -600,28 +615,15 @@ if ($debug) {
         <div class="valor"><?= number_format($totalBanco, 0, ',', '.') ?></div>
     </div>
     <div class="kpi cinza">
-        <div class="rotulo">Seções retornadas</div>
-        <div class="valor"><?= number_format($totalSecoes, 0, ',', '.') ?></div>
-    </div>
-    <div class="kpi laranja">
-        <div class="rotulo">Regiões cadastradas</div>
-        <div class="valor"><?= number_format($totalRegioes, 0, ',', '.') ?></div>
+        <div class="rotulo">
+            <?= $exibirZonas ? 'Municípios / Zonas' : 'Municípios' ?> comparados
+        </div>
+        <div class="valor"><?= number_format($totalLinhas, 0, ',', '.') ?></div>
     </div>
 </div>
 
-<form method="get" action="consultar.php" id="form-filtros">
+<form method="get" action="comparar_colunas.php" id="form-filtros">
     <div class="filtros">
-        <label for="regiao">Região:</label>
-        <select name="regiao" id="regiao">
-            <option value="">Todas</option>
-            <?php foreach ($regioes as $r): ?>
-                <option value="<?= (int)$r['id'] ?>"
-                    <?= (string)$r['id'] === (string)$regiao ? 'selected' : '' ?>>
-                    <?= htmlspecialchars($r['nome']) ?>
-                </option>
-            <?php endforeach; ?>
-        </select>
-
         <label for="municipio">Município:</label>
         <select name="municipio" id="municipio">
             <option value="">Todos</option>
@@ -635,11 +637,6 @@ if ($debug) {
 
         <label for="zona">Zona:</label>
         <select name="zona" id="zona">
-            <option value="">Todas</option>
-        </select>
-
-        <label for="secao">Seção:</label>
-        <select name="secao" id="secao">
             <option value="">Todas</option>
         </select>
 
@@ -669,8 +666,14 @@ if ($debug) {
             <?php endforeach; ?>
         </select>
 
+        <label for="exibir_zonas" class="chk-toggle <?= $exibirZonas ? 'ativo' : '' ?>">
+            <input type="checkbox" name="exibir_zonas" value="1" id="exibir_zonas"
+                <?= $exibirZonas ? 'checked' : '' ?>>
+            Exibir zonas eleitorais
+        </label>
+
         <button type="submit" class="btn-consultar">🔎 Comparar</button>
-        <a href="consultar.php" class="btn-limpar">✖ Limpar</a>
+        <a href="comparar_colunas.php" class="btn-limpar">✖ Limpar</a>
     </div>
 </form>
 
@@ -680,12 +683,14 @@ if ($debug) {
         <div class="icone">⚖️</div>
         <h2>Selecione 2 ou 3 candidatos para comparar</h2>
         <p>
-            Os votos serão exibidos <strong>lado a lado</strong> em cada seção.
-            O candidato vencedor em cada seção é destacado com a cor dele.
+            Os votos serão exibidos <strong>lado a lado</strong> por
+            <strong>município</strong> (e opcionalmente por <strong>zona eleitoral</strong>).
+            O candidato vencedor em cada linha é destacado com a cor dele.
         </p>
         <div class="dica">
-            💡 Use os filtros de <strong>Região</strong>, <strong>Município</strong>,
-            <strong>Zona</strong> ou <strong>Seção</strong> para delimitar a comparação.
+            💡 Use os filtros de <strong>Município</strong> ou <strong>Zona</strong>
+            para delimitar a comparação. Marque
+            <strong>“Exibir zonas eleitorais”</strong> para detalhar por zona.
         </div>
     </div>
 
@@ -749,18 +754,24 @@ if ($debug) {
     </div>
 
     <div class="dica-comparacao">
-        🏆 <b>Vencedor em cada seção:</b> a célula do candidato com mais votos
+        🏆 <b>Vencedor em cada linha:</b> a célula do candidato com mais votos
         ganha o fundo na cor dele. <b>Empates</b> ficam com fundo mas sem troféu.
+        <?php if (!$exibirZonas): ?>
+            <br>ℹ️ Exibindo <b>totais por município</b>. Marque
+            <b>“Exibir zonas eleitorais”</b> para detalhar por zona.
+        <?php else: ?>
+            <br>ℹ️ Exibindo <b>totais por município + zona eleitoral</b>.
+        <?php endif; ?>
     </div>
 
     <div class="tabela-wrap">
         <table class="tabela-comp">
             <thead>
                 <tr>
-                    <th class="fixa col-regiao">Região</th>
                     <th class="fixa">Município</th>
-                    <th class="fixa" style="text-align:right;">Zona</th>
-                    <th class="fixa" style="text-align:right;">Seção</th>
+                    <?php if ($exibirZonas): ?>
+                        <th class="fixa" style="text-align:right;">Zona</th>
+                    <?php endif; ?>
                     <?php foreach ($candidatosCols as $cand):
                         $cor = $coresCandidato[$cand] ?? ['bg' => '#e0ecff', 'tx' => '#0d47a1', 'base' => '#0d6efd'];
                     ?>
@@ -781,10 +792,10 @@ if ($debug) {
                                     : false;
                 ?>
                     <tr>
-                        <td class="col-regiao"><?= htmlspecialchars($linha['regiao']) ?></td>
                         <td><?= htmlspecialchars($linha['municipio']) ?></td>
-                        <td class="col-num"><?= (int)$linha['zona'] ?></td>
-                        <td class="col-num"><?= (int)$linha['secao'] ?></td>
+                        <?php if ($exibirZonas): ?>
+                            <td class="col-num"><?= (int)($linha['zona'] ?? 0) ?></td>
+                        <?php endif; ?>
 
                         <?php foreach ($candidatosCols as $cand):
                             $cor  = $coresCandidato[$cand] ?? ['bg' => '#e0ecff', 'tx' => '#0d47a1', 'base' => '#0d6efd'];
@@ -814,7 +825,7 @@ if ($debug) {
             </tbody>
             <tfoot>
                 <tr>
-                    <td colspan="4" style="text-align:right;">TOTAL GERAL</td>
+                    <td colspan="<?= $exibirZonas ? 2 : 1 ?>" style="text-align:right;">TOTAL GERAL</td>
                     <?php foreach ($candidatosCols as $cand):
                         $cor = $coresCandidato[$cand] ?? ['bg' => '#e0ecff', 'tx' => '#0d47a1', 'base' => '#0d6efd'];
                         $tot = (int)($statsCand[$cand]['votos'] ?? 0);
@@ -867,46 +878,20 @@ const MAX_CANDIDATOS = <?= (int)$MAX_CANDIDATOS ?>;
 })();
 
 // ============================================================
-// Cascata: Região -> Município -> Zona -> Seção
+// Cascata: Município -> Zona
 // ============================================================
-const selRegiao    = document.getElementById('regiao');
 const selMunicipio = document.getElementById('municipio');
 const selZona      = document.getElementById('zona');
-const selSecao     = document.getElementById('secao');
 
-const valorRegiaoAtual    = <?= json_encode($regiao) ?>;
 const valorMunicipioAtual = <?= json_encode($municipio) ?>;
 const valorZonaAtual      = <?= json_encode($zona) ?>;
-const valorSecaoAtual     = <?= json_encode($secao) ?>;
-
-async function carregarMunicipios(regiao, municipioSelecionado = '') {
-    selMunicipio.innerHTML = '<option value="">Todos</option>';
-    selZona.innerHTML      = '<option value="">Todas</option>';
-    selSecao.innerHTML     = '<option value="">Todas</option>';
-
-    const url = regiao
-        ? `consultar.php?action=municipios&regiao=${encodeURIComponent(regiao)}`
-        : `consultar.php?action=municipios`;
-
-    const resp  = await fetch(url);
-    const lista = await resp.json();
-
-    lista.forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = m;
-        opt.textContent = m;
-        if (m === municipioSelecionado) opt.selected = true;
-        selMunicipio.appendChild(opt);
-    });
-}
 
 async function carregarZonas(municipio, zonaSelecionada = '') {
-    selZona.innerHTML  = '<option value="">Todas</option>';
-    selSecao.innerHTML = '<option value="">Todas</option>';
+    selZona.innerHTML = '<option value="">Todas</option>';
 
     if (!municipio) return;
 
-    const resp  = await fetch(`consultar.php?action=zonas&municipio=${encodeURIComponent(municipio)}`);
+    const resp  = await fetch(`comparar_colunas.php?action=zonas&municipio=${encodeURIComponent(municipio)}`);
     const zonas = await resp.json();
 
     zonas.forEach(z => {
@@ -918,32 +903,21 @@ async function carregarZonas(municipio, zonaSelecionada = '') {
     });
 }
 
-async function carregarSecoes(municipio, zona, secaoSelecionada = '') {
-    selSecao.innerHTML = '<option value="">Todas</option>';
-
-    if (!municipio || !zona) return;
-
-    const resp   = await fetch(`consultar.php?action=secoes&municipio=${encodeURIComponent(municipio)}&zona=${encodeURIComponent(zona)}`);
-    const secoes = await resp.json();
-
-    secoes.forEach(s => {
-        const opt = document.createElement('option');
-        opt.value = s;
-        opt.textContent = s;
-        if (String(s) === String(secaoSelecionada)) opt.selected = true;
-        selSecao.appendChild(opt);
-    });
-}
-
-selRegiao.addEventListener('change', () => carregarMunicipios(selRegiao.value));
 selMunicipio.addEventListener('change', () => carregarZonas(selMunicipio.value));
-selZona.addEventListener('change', () => carregarSecoes(selMunicipio.value, selZona.value));
 
 (async () => {
-    if (valorRegiaoAtual)    await carregarMunicipios(valorRegiaoAtual, valorMunicipioAtual);
     if (valorMunicipioAtual) await carregarZonas(valorMunicipioAtual, valorZonaAtual);
-    if (valorZonaAtual)      await carregarSecoes(valorMunicipioAtual, valorZonaAtual, valorSecaoAtual);
 })();
+
+// ============================================================
+// Toggle "Exibir zonas eleitorais" — auto-envia o form
+// ============================================================
+const chkZonas = document.getElementById('exibir_zonas');
+if (chkZonas) {
+    chkZonas.addEventListener('change', () => {
+        document.getElementById('form-filtros').submit();
+    });
+}
 </script>
 
 </body>

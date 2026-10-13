@@ -1,9 +1,41 @@
 <?php
 // ------------------------------------------------------------
-// Configuração do banco
+// Configuração do banco + autenticação
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
+require_once __DIR__ . '/auth.php';
 
+// ============================================================
+// USUÁRIO LOGADO
+// ============================================================
+$__u = usuarioLogado();
+
+$__loginLower = mb_strtolower(trim((string)($__u['login'] ?? '')), 'UTF-8');
+$__nomeLower  = mb_strtolower(trim((string)($__u['nome']  ?? '')), 'UTF-8');
+$__perfil     = $__u['perfil'] ?? 'consulta';
+
+$__loginsDono = ['barreto', 'vbarreto'];
+$__nomesDono  = ['barreto', 'valter barreto'];
+
+$__ehDono = in_array($__loginLower, $__loginsDono, true)
+         || in_array($__nomeLower,  $__nomesDono,  true);
+
+$__ehSuper      = ($__perfil === 'superadmin');
+$__ehAdminNivel = ($__perfil === 'admin');
+$__ehAdmin      = ($__ehSuper || $__ehAdminNivel);
+
+$isAdmin = ($__ehAdmin && $__ehDono);
+
+$__rotuloPerfil = function_exists('rotuloPerfil')
+                    ? rotuloPerfil($__perfil)
+                    : strtoupper($__perfil);
+$__classePerfil = function_exists('classePerfil')
+                    ? classePerfil($__perfil)
+                    : ('perfil-' . $__perfil);
+
+// ============================================================
+// CONEXÃO PDO
+// ============================================================
 $pdo = new PDO(
     "mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4",
     $DB_USER, $DB_PASS,
@@ -16,7 +48,6 @@ $pdo = new PDO(
 // ============================================================
 // DETECÇÃO DE ESTRUTURAS
 // ============================================================
-
 $colunasVotos = [];
 foreach ($pdo->query("SHOW COLUMNS FROM votos") as $c) $colunasVotos[] = $c['Field'];
 
@@ -113,38 +144,38 @@ if ($raio > 80) $raio = 80;
 if ($opacidade < 0.1) $opacidade = 0.1;
 if ($opacidade > 1)   $opacidade = 1;
 
-// ------------------------------------------------------------
-// MAPA SÓ APARECE SE UM FILTRO DA EQUIPE ESTIVER ATIVO
-// (cargo sozinho não conta — não filtra a equipe)
-// ------------------------------------------------------------
+// Mapa só aparece com filtro de equipe ativo
 $mostrarMapa = ($candidato !== '' || $coordId > 0 || $liderId > 0);
 $temFiltro   = $mostrarMapa || $cargo !== '';
 
 // ============================================================
 // VOTOS POR (ZONA, SEÇÃO)
 // ============================================================
-$filtrosVotos = [];
-$paramsVotos  = [];
-if ($candidato !== '') {
-    $filtrosVotos[] = "nomeCandidatoResp = :cand";
-    $paramsVotos[':cand'] = $candidato;
-}
-if ($cargo !== '') {
-    $filtrosVotos[] = "nomeCargoPerg = :cargo";
-    $paramsVotos[':cargo'] = $cargo;
-}
-$whereVotos = $filtrosVotos ? 'WHERE ' . implode(' AND ', $filtrosVotos) : '';
-
 $votosPorSecao = [];
-$stmt = $pdo->prepare(
-    "SELECT numeroZona, numeroSecao, SUM(qtdVotos) AS total
-     FROM votos
-     $whereVotos
-     GROUP BY numeroZona, numeroSecao"
-);
-$stmt->execute($paramsVotos);
-foreach ($stmt->fetchAll() as $r) {
-    $votosPorSecao[$r['numeroZona'] . '|' . $r['numeroSecao']] = (int)$r['total'];
+
+if ($candidato !== '' || $cargo !== '') {
+    $filtrosVotos = [];
+    $paramsVotos  = [];
+    if ($candidato !== '') {
+        $filtrosVotos[] = "nomeCandidatoResp = :cand";
+        $paramsVotos[':cand'] = $candidato;
+    }
+    if ($cargo !== '') {
+        $filtrosVotos[] = "nomeCargoPerg = :cargo";
+        $paramsVotos[':cargo'] = $cargo;
+    }
+    $whereVotos = 'WHERE ' . implode(' AND ', $filtrosVotos);
+
+    $stmt = $pdo->prepare(
+        "SELECT numeroZona, numeroSecao, SUM(qtdVotos) AS total
+         FROM votos
+         $whereVotos
+         GROUP BY numeroZona, numeroSecao"
+    );
+    $stmt->execute($paramsVotos);
+    foreach ($stmt->fetchAll() as $r) {
+        $votosPorSecao[$r['numeroZona'] . '|' . $r['numeroSecao']] = (int)$r['total'];
+    }
 }
 
 // ============================================================
@@ -177,7 +208,7 @@ foreach ($coordenadores as $c) {
 }
 
 // ============================================================
-// LIDERANÇAS
+// LIDERANÇAS (só das permitidas)
 // ============================================================
 $liderancasTodas = [];
 if ($coordenadoresPermitidos) {
@@ -382,6 +413,49 @@ $cargos = $pdo->query(
     h1 { color:#333; margin-bottom: 4px; }
     .subtitulo { color:#666; font-size:13px; margin-bottom:18px; }
 
+    /* ============================================================
+       CARD DO USUÁRIO LOGADO
+       ============================================================ */
+    .barra-usuario {
+        background:#fff; padding:10px 16px; border-radius:6px;
+        box-shadow:0 1px 3px rgba(0,0,0,.08);
+        display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+        font-size:13.5px; margin-bottom:18px;
+        border-left:5px solid #6c757d;
+    }
+    .barra-usuario.admin { border-left-color:#ffc107; }
+    .barra-usuario.super { border-left-color:#dc3545; }
+    .barra-usuario .nome-user { font-weight:bold; color:#333; }
+    .barra-usuario .saudacao { color:#888; font-weight:normal; margin-right:3px; }
+
+    .perfil-tag {
+        font-size:10px; padding:2px 8px; border-radius:8px;
+        font-weight:bold; letter-spacing:.5px;
+        background:#e6f0fa; color:#0069d9;
+    }
+    .perfil-tag.perfil-super    { background:#dc3545; color:#fff; }
+    .perfil-tag.perfil-admin    { background:#fff3cd; color:#856404; }
+    .perfil-tag.perfil-consulta { background:#e6f0fa; color:#0069d9; }
+
+    .badge-admin {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#fff3cd; color:#856404;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
+    .badge-super {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#dc3545; color:#fff;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
+    .badge-visitante {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#e9ecef; color:#495057;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
+
     .kpis { display:flex; gap:15px; flex-wrap:wrap; margin-bottom:20px; }
     .kpi {
         background:#fff; border-radius:8px; padding:14px 22px;
@@ -430,9 +504,7 @@ $cargos = $pdo->query(
     #lideranca + .select2-container   { min-width: 220px; max-width: 300px; }
     #cargo + .select2-container       { min-width: 150px; }
 
-    /* ------------------------------------------------------------
-       Mensagem: sem filtro
-       ------------------------------------------------------------ */
+    /* Mensagem sem filtro */
     .msg-sem-filtro {
         background:#fff; border-left:5px solid #0069d9;
         padding:32px 36px; border-radius:8px;
@@ -560,6 +632,28 @@ $cargos = $pdo->query(
 <body>
 
 <a href="index.php" class="link-voltar">&larr; Voltar ao menu</a>
+
+<!-- ============================================================
+     CARD DO USUÁRIO LOGADO
+     ============================================================ -->
+<div class="barra-usuario <?= $isAdmin ? ($__ehSuper ? 'super' : 'admin') : '' ?>">
+    <span>
+        👤 <span class="saudacao">Olá,</span>
+        <span class="nome-user"><?= htmlspecialchars($__u['nome'] ?? '—') ?></span>
+    </span>
+    <span class="perfil-tag <?= htmlspecialchars($__classePerfil) ?>">
+        <?= htmlspecialchars($__rotuloPerfil) ?>
+    </span>
+    <?php if ($isAdmin): ?>
+        <span class="<?= $__ehSuper ? 'badge-super' : 'badge-admin' ?>">
+            <?= $__ehSuper ? '🔓 superadmin' : '🔓 administrador' ?>
+        </span>
+    <?php elseif ($__ehAdmin && !$__ehDono): ?>
+        <span class="badge-visitante">👁️ admin (não autorizado a excluir)</span>
+    <?php else: ?>
+        <span class="badge-visitante">👁️ visitante</span>
+    <?php endif; ?>
+</div>
 
 <h1>Mapa de Calor — Coordenadores e Lideranças</h1>
 <div class="subtitulo">

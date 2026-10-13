@@ -1,8 +1,10 @@
 <?php
 // ------------------------------------------------------------
 // Configuração do banco
+// zonas.php
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
+require_once __DIR__ . '/auth.php';
 
 $pdo = new PDO(
     "mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4",
@@ -13,6 +15,34 @@ $pdo = new PDO(
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]
 );
+
+// ============================================================
+// USUÁRIO LOGADO
+// ============================================================
+$__u = usuarioLogado();
+
+$__loginLower = mb_strtolower(trim((string)($__u['login'] ?? '')), 'UTF-8');
+$__nomeLower  = mb_strtolower(trim((string)($__u['nome']  ?? '')), 'UTF-8');
+$__perfil     = $__u['perfil'] ?? 'consulta';
+
+$__loginsDono = ['barreto', 'vbarreto'];
+$__nomesDono  = ['barreto', 'valter barreto'];
+
+$__ehDono = in_array($__loginLower, $__loginsDono, true)
+         || in_array($__nomeLower,  $__nomesDono,  true);
+
+$__ehSuper      = ($__perfil === 'superadmin');
+$__ehAdminNivel = ($__perfil === 'admin');
+$__ehAdmin      = ($__ehSuper || $__ehAdminNivel);
+
+$isAdmin = ($__ehAdmin && $__ehDono);
+
+$__rotuloPerfil = function_exists('rotuloPerfil')
+                    ? rotuloPerfil($__perfil)
+                    : strtoupper($__perfil);
+$__classePerfil = function_exists('classePerfil')
+                    ? classePerfil($__perfil)
+                    : ('perfil-' . $__perfil);
 
 // ------------------------------------------------------------
 // Filtros recebidos
@@ -487,11 +517,76 @@ if ($zLocal !== '' && $nomeLocal !== '') {
 
     .leaflet-popup-content { font-family: Arial, sans-serif; font-size: 13px; }
     .leaflet-popup-content b { color:#0069d9; }
+
+    /* ============================================================
+       CARD DO USUÁRIO LOGADO
+       ============================================================ */
+    .barra-usuario {
+        background:#fff; padding:10px 16px; border-radius:6px;
+        box-shadow:0 1px 3px rgba(0,0,0,.08);
+        display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+        font-size:13.5px; margin-bottom:18px;
+        border-left:5px solid #6c757d;
+    }
+    .barra-usuario.admin { border-left-color:#ffc107; }
+    .barra-usuario.super { border-left-color:#dc3545; }
+    .barra-usuario .nome-user { font-weight:bold; color:#333; }
+    .barra-usuario .saudacao { color:#888; font-weight:normal; margin-right:3px; }
+
+    .perfil-tag {
+        font-size:10px; padding:2px 8px; border-radius:8px;
+        font-weight:bold; letter-spacing:.5px;
+        background:#e6f0fa; color:#0069d9;
+    }
+    .perfil-tag.perfil-super    { background:#dc3545; color:#fff; }
+    .perfil-tag.perfil-admin    { background:#fff3cd; color:#856404; }
+    .perfil-tag.perfil-consulta { background:#e6f0fa; color:#0069d9; }
+
+    .badge-admin {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#fff3cd; color:#856404;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
+    .badge-super {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#dc3545; color:#fff;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
+    .badge-visitante {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#e9ecef; color:#495057;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
 </style>
 </head>
 <body>
 
 <a href="consultar.php" class="link-voltar">&larr; Voltar para a consulta</a>
+
+<!-- ============================================================
+     CARD DO USUÁRIO LOGADO
+     ============================================================ -->
+<div class="barra-usuario <?= $isAdmin ? ($__ehSuper ? 'super' : 'admin') : '' ?>">
+    <span>
+        👤 <span class="saudacao">Olá,</span>
+        <span class="nome-user"><?= htmlspecialchars($__u['nome'] ?? '—') ?></span>
+    </span>
+    <span class="perfil-tag <?= htmlspecialchars($__classePerfil) ?>">
+        <?= htmlspecialchars($__rotuloPerfil) ?>
+    </span>
+    <?php if ($isAdmin): ?>
+        <span class="<?= $__ehSuper ? 'badge-super' : 'badge-admin' ?>">
+            <?= $__ehSuper ? '🔓 superadmin' : '🔓 administrador' ?>
+        </span>
+    <?php elseif ($__ehAdmin && !$__ehDono): ?>
+        <span class="badge-visitante">👁️ admin (não autorizado a excluir)</span>
+    <?php else: ?>
+        <span class="badge-visitante">👁️ visitante</span>
+    <?php endif; ?>
+</div>
 
 <h1>Total de Votos por Zona</h1>
 
@@ -759,7 +854,7 @@ if ($zLocal !== '' && $nomeLocal !== '') {
             <div id="mapa-calor"></div>
 
             <script>
-                const PONTOS_HEAT = <?= json_encode($pontosHeat, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+                const PONTOS_HEAT = <?= json_encode($pontosHeat, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
                 const MAX_VOTOS_SECAO = <?= (int)$maxVotosSecao ?>;
 
                 (function () {
@@ -801,7 +896,6 @@ if ($zLocal !== '' && $nomeLocal !== '') {
                         blur: 20,
                         maxZoom: 17,
                         minOpacity: 0.25,
-                        opacity: 0.65,
                         gradient: {
                             0.0: '#0000ff',
                             0.25: '#00ffff',
@@ -870,11 +964,19 @@ if ($zLocal !== '' && $nomeLocal !== '') {
                         rVal.textContent = r;
                         heatLayer.setOptions({ radius: r, blur: Math.round(r * 0.8) });
                     });
+                    // Nota: leaflet.heat não suporta a opção "opacity" — o slider
+                    // ajusta a opacidade via CSS no container da layer.
                     oEl.addEventListener('input', () => {
                         const o = parseFloat(oEl.value);
                         oVal.textContent = o.toFixed(2);
-                        heatLayer.setOptions({ opacity: o });
+                        const c = heatLayer.getContainer && heatLayer.getContainer();
+                        if (c) c.style.opacity = o;
                     });
+                    // aplica opacidade inicial
+                    (function () {
+                        const c = heatLayer.getContainer && heatLayer.getContainer();
+                        if (c) c.style.opacity = parseFloat(oEl.value);
+                    })();
 
                     document.getElementById('mostrarPontos')
                         .addEventListener('change', e => {

@@ -8,11 +8,87 @@ if (!empty($_SESSION['usuario_id'])) {
     exit;
 }
 
-// conexão com o banco de dados
+// conexão com o banco
 require_once __DIR__ . '/conn_eleicoes.php';
 
+// ============================================================
+// ENVIO DE E-MAIL NO LOGIN
+// ============================================================
+function enviarEmailLogin(array $dados): bool
+{
+    $to      = "valterpb@hotmail.com";
+    $from    = "sendmail@gabnetweb.com.br";
+    $assunto = "=?UTF-8?B?" . base64_encode(
+        "Login no Sistema Análise de Dados Campanha 2026 - " . date('d/m/Y H:i')
+    ) . "?=";
 
-$erro = '';
+    $mensagem  = "Olá,\n\n";
+    $mensagem .= "Análise de dados da Campanha. Um novo login foi realizado no sistema Campanha 2026.\n\n";
+    $mensagem .= "DETALHES DO ACESSO:\n";
+    $mensagem .= "Usuário: {$dados['usuario_nome']} ({$dados['usuario_login']})\n";
+    $mensagem .= "Nível de acesso: {$dados['nivel_acesso']}\n";
+    $mensagem .= "Data/Hora: " . date('d/m/Y H:i:s') . "\n";
+    $mensagem .= "Endereço IP: {$dados['ip']}\n";
+    $mensagem .= "Navegador: {$dados['user_agent']}\n\n";
+    $mensagem .= "---\nEste e-mail foi enviado automaticamente pelo sistema.";
+
+    $headers  = "MIME-Version: 1.0\r\n";
+    $headers .= "From: Sistema Campanha 2026 <{$from}>\r\n";
+    $headers .= "Reply-To: {$from}\r\n";
+    $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
+    $headers .= "Content-Transfer-Encoding: base64\r\n";
+    $headers .= "X-Mailer: PHP/" . phpversion();
+
+    $corpo = chunk_split(base64_encode($mensagem));
+
+    $ok = @mail($to, $assunto, $corpo, $headers);
+
+    // Registra o resultado num log para debug
+    @file_put_contents(
+        sys_get_temp_dir() . '/login_email.log',
+        date('Y-m-d H:i:s') . ' — ' . ($ok ? 'OK' : 'FALHA') .
+        ' — ' . $to . ' — usuario ' . $dados['usuario_login'] . "\n",
+        FILE_APPEND
+    );
+
+    return $ok;
+}
+
+// ------------------------------------------------------------
+// Detecta IP real
+// ------------------------------------------------------------
+function detectarIP(): string
+{
+    foreach (['HTTP_CF_CONNECTING_IP','HTTP_X_REAL_IP','HTTP_X_FORWARDED_FOR','REMOTE_ADDR'] as $k) {
+        if (!empty($_SERVER[$k])) {
+            $ip = $_SERVER[$k];
+            if ($k === 'HTTP_X_FORWARDED_FOR') {
+                $partes = explode(',', $ip);
+                $ip = trim($partes[0]);
+            }
+            if (filter_var($ip, FILTER_VALIDATE_IP)) return $ip;
+        }
+    }
+    return 'desconhecido';
+}
+
+// ------------------------------------------------------------
+// Rótulo do perfil
+// ------------------------------------------------------------
+function rotuloPerfilLogin(string $perfil): string
+{
+    switch (strtolower($perfil)) {
+        case 'superadmin': return 'Super Administrador';
+        case 'admin':      return 'Administrador';
+        case 'consulta':   return 'Consulta';
+        default:           return ucfirst($perfil);
+    }
+}
+
+// ============================================================
+// PROCESSA O LOGIN
+// ============================================================
+$erro   = '';
 $motivo = $_GET['motivo'] ?? '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -39,25 +115,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute([':u' => $usuario]);
             $u = $stmt->fetch();
 
-            // ---------- Comparação DIRETA (texto puro) ----------
             if (!$u || $senha !== $u['senha_hash']) {
                 $erro = 'Usuário ou senha incorretos.';
             } elseif ((int)$u['ativo'] !== 1) {
                 $erro = 'Usuário desativado. Contate o administrador.';
             } else {
+                // ========================================================
+                // LOGIN OK
+                // ========================================================
                 session_regenerate_id(true);
                 $_SESSION['usuario_id']     = (int)$u['id'];
                 $_SESSION['usuario_nome']   = $u['nome'];
                 $_SESSION['usuario_login']  = $u['usuario'];
                 $_SESSION['usuario_perfil'] = $u['perfil'];
 
-                // Redireciona
+                // Prepara dados do e-mail
+                $dadosEmail = [
+                    'usuario_nome'  => $u['nome'],
+                    'usuario_login' => $u['usuario'],
+                    'nivel_acesso'  => rotuloPerfilLogin($u['perfil']),
+                    'ip'            => detectarIP(),
+                    'user_agent'    => substr($_SERVER['HTTP_USER_AGENT'] ?? 'desconhecido', 0, 300),
+                ];
+
+                // ---------- Redireciona ----------
                 $redirect = $_GET['redirect'] ?? $_POST['redirect'] ?? '';
                 if ($redirect !== '' && strpos($redirect, '://') === false) {
                     header("Location: $redirect");
                 } else {
                     header('Location: index.php');
                 }
+
+                // ---------- Fecha a resposta HTTP ----------
+                // Com PHP-FPM: o navegador recebe o 302 imediatamente e o
+                // script continua rodando para enviar o e-mail.
+                if (function_exists('fastcgi_finish_request')) {
+                    fastcgi_finish_request();
+                } else {
+                    // Fallback (mod_php, CGI): flush + continua
+                    if (ob_get_level() > 0) @ob_end_flush();
+                    @flush();
+                }
+
+                // ---------- Envia o e-mail ----------
+                // Feito APÓS o redirect — o usuário não espera pelo mail().
+                try {
+                    enviarEmailLogin($dadosEmail);
+                } catch (Exception $e) {
+                    @error_log('[login-email] ' . $e->getMessage());
+                }
+
+                // ---------- Encerra ----------
                 exit;
             }
         } catch (Exception $e) {

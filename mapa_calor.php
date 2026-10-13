@@ -1,9 +1,10 @@
 <?php
 // ------------------------------------------------------------
 // Configuração do banco
+// mapa_calor.php
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
-
+require_once __DIR__ . '/auth.php';
 
 $pdo = new PDO(
     "mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4",
@@ -16,10 +17,49 @@ $pdo = new PDO(
 );
 
 // ------------------------------------------------------------
+// Fallback: garante que as variáveis de usuário existam
+// ------------------------------------------------------------
+if (!isset($__u)) {
+    if (function_exists('usuarioLogado')) {
+        $__u = usuarioLogado();
+    } else {
+        $__u = [
+            'nome'   => $_SESSION['usuario_nome']   ?? '—',
+            'login'  => $_SESSION['usuario_login']  ?? '',
+            'perfil' => $_SESSION['usuario_perfil'] ?? '',
+        ];
+    }
+}
+$__perfil       = strtolower(trim((string)($__u['perfil'] ?? '')));
+$__ehSuper      = ($__perfil === 'superadmin' || $__perfil === 'super');
+$__ehAdminNivel = ($__perfil === 'admin' || $__perfil === 'administrador');
+
+$__loginLower = mb_strtolower(trim((string)($__u['login'] ?? '')), 'UTF-8');
+$__nomeLower  = mb_strtolower(trim((string)($__u['nome']  ?? '')), 'UTF-8');
+$__loginsDono = ['barreto', 'vbarreto'];
+$__nomesDono  = ['barreto', 'valter barreto'];
+$__ehDono = in_array($__loginLower, $__loginsDono, true)
+         || in_array($__nomeLower,  $__nomesDono,  true);
+
+$__ehAdmin = ($__ehSuper || $__ehAdminNivel);
+$isAdmin   = ($__ehAdmin && $__ehDono);
+
+if ($__ehSuper) {
+    $__classePerfil = 'super';
+    $__rotuloPerfil = 'SUPERADMIN';
+} elseif ($__ehAdminNivel) {
+    $__classePerfil = 'admin';
+    $__rotuloPerfil = 'ADMIN';
+} else {
+    $__classePerfil = 'visitante';
+    $__rotuloPerfil = 'VISITANTE';
+}
+
+// ------------------------------------------------------------
 // Filtros
 // ------------------------------------------------------------
 $municipio = $_GET['municipio'] ?? '';   // '' = Todos os municípios
-$cargo     = $_GET['cargo']     ?? '';
+$ano       = $_GET['ano']       ?? '';   // '' = Todos os anos
 $candidato = $_GET['candidato'] ?? '';
 $raio      = isset($_GET['raio'])  ? (int)$_GET['raio']  : 25;
 $opacidade = isset($_GET['opac'])  ? (float)$_GET['opac'] : 0.65;
@@ -37,9 +77,10 @@ if ($municipio !== '') {
     $filtros[] = "v.nomeMunicipio = :municipio";
     $params[':municipio'] = $municipio;
 }
-if ($cargo !== '') {
-    $filtros[] = "v.nomeCargoPerg = :cargo";
-    $params[':cargo'] = $cargo;
+// Filtro por ano (ajuste o nome da coluna se no seu schema for diferente)
+if ($ano !== '') {
+    $filtros[] = "v.ano = :ano";
+    $params[':ano'] = $ano;
 }
 if ($candidato !== '') {
     $filtros[] = "v.nomeCandidatoResp = :candidato";
@@ -125,8 +166,8 @@ $municipios = $pdo->query(
     "SELECT DISTINCT nomeMunicipio FROM votos ORDER BY nomeMunicipio"
 )->fetchAll(PDO::FETCH_COLUMN);
 
-$cargos = $pdo->query(
-    "SELECT DISTINCT nomeCargoPerg FROM votos ORDER BY nomeCargoPerg"
+$anos = $pdo->query(
+    "SELECT DISTINCT ano FROM votos WHERE ano IS NOT NULL ORDER BY ano DESC"
 )->fetchAll(PDO::FETCH_COLUMN);
 
 $candidatos = $pdo->query(
@@ -160,6 +201,37 @@ $rotuloMunicipio = $municipio !== ''
 
     .link-voltar { display:inline-block; margin-bottom:15px; color:#0069d9; text-decoration:none; }
     .link-voltar:hover { text-decoration:underline; }
+
+    /* ===== Barra de usuário (mesmo modelo do consultar.php) ===== */
+    .barra-usuario {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: #fff;
+        padding: 10px 16px;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,.08);
+        margin-bottom: 18px;
+        font-size: 13px;
+    }
+    .barra-usuario.super { border-left: 5px solid #6f42c1; }
+    .barra-usuario.admin { border-left: 5px solid #0d6efd; }
+    .nome-user { font-weight: 600; }
+    .perfil-tag {
+        background: #e9ecef; color: #495057;
+        padding: 2px 10px; border-radius: 12px;
+        font-size: 11px; font-weight: 600; text-transform: uppercase;
+    }
+    .perfil-tag.admin { background:#0d6efd; color:#fff; }
+    .perfil-tag.super { background:#6f42c1; color:#fff; }
+    .badge-super     { background:#6f42c1; color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .badge-admin     { background:#0d6efd; color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .badge-visitante { background:#e9ecef; color:#495057; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .link-debug {
+        margin-left: auto; color: #6c757d;
+        text-decoration: none; font-size: 12px;
+    }
+    .link-debug:hover { color: #0d6efd; text-decoration: underline; }
 
     form.filtro {
         background:#fff; padding:15px; border-radius:8px;
@@ -251,9 +323,28 @@ $rotuloMunicipio = $municipio !== ''
 <a href="index.php" class="link-voltar">&larr; Voltar ao menu</a>
 
 <h1>Mapa de Calor — Votos</h1>
+
+<div class="barra-usuario <?= $__ehAdmin ? ($__ehSuper ? 'super' : 'admin') : '' ?>">
+    <span>👤 <span class="nome-user"><?= htmlspecialchars($__u['nome'] ?? '—') ?></span></span>
+    <span class="perfil-tag <?= htmlspecialchars($__classePerfil) ?>">
+        <?= htmlspecialchars($__rotuloPerfil) ?>
+    </span>
+    <?php if ($isAdmin): ?>
+        <span class="<?= $__ehSuper ? 'badge-super' : 'badge-admin' ?>">
+            <?= $__ehSuper ? '🔓 superadmin' : '🔓 administrador' ?>
+        </span>
+    <?php elseif ($__ehAdmin && !$__ehDono): ?>
+        <span class="badge-admin">🔓 admin (não autorizado a excluir)</span>
+    <?php else: ?>
+        <span class="badge-visitante">👁️ visitante</span>
+    <?php endif; ?>
+
+    <a class="link-debug" href="?debug_sessao=1">🔍 ver sessão</a>
+</div>
+
 <div class="subtitulo">
     Cada ponto é uma zona eleitoral. A intensidade da cor é proporcional
-    ao total de votos da zona (respeitando os filtros de cargo/candidato).
+    ao total de votos da zona (respeitando os filtros de ano/candidato).
 </div>
 
 <form class="filtro" method="get" action="mapa_calor.php">
@@ -269,13 +360,13 @@ $rotuloMunicipio = $municipio !== ''
             <?php endforeach; ?>
         </select>
 
-        <label for="cargo">Cargo:</label>
-        <select name="cargo" id="cargo">
-            <option value="">Todos</option>
-            <?php foreach ($cargos as $c): ?>
-                <option value="<?= htmlspecialchars($c) ?>"
-                    <?= $c === $cargo ? 'selected' : '' ?>>
-                    <?= htmlspecialchars($c) ?>
+        <label for="ano">Ano:</label>
+        <select name="ano" id="ano">
+            <option value="">Todos os anos</option>
+            <?php foreach ($anos as $a): ?>
+                <option value="<?= htmlspecialchars((string)$a) ?>"
+                    <?= (string)$a === (string)$ano ? 'selected' : '' ?>>
+                    <?= htmlspecialchars((string)$a) ?>
                 </option>
             <?php endforeach; ?>
         </select>
@@ -326,6 +417,12 @@ $rotuloMunicipio = $municipio !== ''
             <div class="rotulo"><?= $municipio === '' ? 'Abrangência' : 'Município' ?></div>
             <div class="valor" style="font-size:16px;"><?= htmlspecialchars($rotuloMunicipio) ?></div>
         </div>
+        <?php if ($ano !== ''): ?>
+            <div class="kpi roxo">
+                <div class="rotulo">Ano</div>
+                <div class="valor"><?= htmlspecialchars((string)$ano) ?></div>
+            </div>
+        <?php endif; ?>
         <div class="kpi verde">
             <div class="rotulo">Total de votos</div>
             <div class="valor"><?= number_format($totalVotos, 0, ',', '.') ?></div>

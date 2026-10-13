@@ -294,7 +294,7 @@ $__iconeAmb  = $__ehLocal ? '🖥' : '🌐';
             position: absolute;
             top: 100%;
             left: 0;
-            min-width: 260px;
+            min-width: 290px;
             background: #fff;
             border: 1px solid #e3e3e3;
             border-top: 3px solid #0069d9;
@@ -312,7 +312,7 @@ $__iconeAmb  = $__ehLocal ? '🖥' : '🌐';
         .top-menu .dropdown .menu-drop a {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
             padding: 10px 18px;
             font-size: 13.5px;
             color: #444;
@@ -332,10 +332,14 @@ $__iconeAmb  = $__ehLocal ? '🖥' : '🌐';
             font-weight: bold;
         }
         .top-menu .dropdown .menu-drop a .icone {
-            font-size: 15px;
-            width: 20px;
+            font-size: 16px;
+            width: 22px;
             text-align: center;
             flex-shrink: 0;
+            line-height: 1;
+        }
+        .top-menu .dropdown .menu-drop a .texto {
+            flex: 1;
         }
         .top-menu .dropdown .menu-drop .divisor {
             height: 1px;
@@ -367,7 +371,7 @@ $__iconeAmb  = $__ehLocal ? '🖥' : '🌐';
             .top-menu a,
             .top-menu .dropdown > .gatilho { padding: 10px 10px; font-size: 13px; }
             .top-menu .dropdown .menu-drop {
-                min-width: 220px; border-radius: 0 0 6px 6px;
+                min-width: 240px; border-radius: 0 0 6px 6px;
             }
             .top-menu .usuario-box {
                 width: 100%;
@@ -481,57 +485,112 @@ $__mostrarAdmin = ($__ehAdmin && $__ehDono);
 <nav class="top-menu">
     <span class="marca">Eleições PE 2026 - VERSÃO BETA 1.2</span>
 
-
-
-
-        <!-- Grupo Análise -->
+    <!-- Grupo Geral -->
     <div class="dropdown">
         <button type="button" class="gatilho">
-            Geral <span class="seta">▼</span>
+            📋 Geral <span class="seta">▼</span>
         </button>
         <div class="menu-drop">
-    <a href="candidatos_campanhas.php" target="_blank" rel="noopener noreferrer">Candidatos e Campanhas</a>
-    <a href="consultar.php" target="_blank" rel="noopener noreferrer">Comparativo Região/Seção (3 cand.)</a>
-    <a href="regioes.php" target="_blank" rel="noopener noreferrer">1 Cand. por Regiões</a>
+            <a href="candidatos_campanhas.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">🧑</span>
+                <span class="texto">G1-Candidatos e Campanhas</span>
+            </a>
+            <a href="mapa_municipios.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">📊</span>
+                <span class="texto">G2-Mapa dos Municípios</span>
+            </a>            
+          
+            <a href="comparar_colunas.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">📊</span>
+                <span class="texto">G3-Comparar Candidatos 1</span>
+            </a>
+
+            <a href="comparar_candidatos.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">⚖️</span>
+                <span class="texto">G4-Comparar Candidatos 2</span>
+            </a>
+
+            <a href="regioes.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">🌎</span>
+                <span class="texto">G5-Cand. por Regiões 1</span>
+            </a>              
+            <a href="regioes_candidatos.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">🌎</span>
+                <span class="texto">G6-Cand. por Regiões 2</span>
+            </a>
+          
         </div>
     </div>
 
     <!-- Grupo Análise -->
     <div class="dropdown">
         <button type="button" class="gatilho">
-            Análise <span class="seta">▼</span>
+            📈 Análise <span class="seta">▼</span>
         </button>
         <div class="menu-drop">
-            <a href="mapa_calor_dois_v2.php" target="_blank" rel="noopener noreferrer">Mapa de Calor — 2 Candidatos</a>
-            <a href="mapa_calor.php" target="_blank" rel="noopener noreferrer">Mapa de Calor - 1 Cadidato</a>
-            <a href="comparar_candidatos.php" target="_blank" rel="noopener noreferrer">Comparar Candidatos - 2 Candidatos</a>
+
+            <a href="mapa_calor.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">🌡️</span>
+                <span class="texto">A1-Mapa de Calor Zonas</span>
+            </a>
+
+            <a href="mapa_calor_dois_v2.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">🔥</span>
+                <span class="texto">A2-Mapa de Calor — 2 Candidatos</span>
+            </a>
+
+
         </div>
     </div>
 
     <!-- Grupo Equipe -->
     <div class="dropdown">
         <button type="button" class="gatilho">
-            Equipe <span class="seta">▼</span>
+            👥 Equipe <span class="seta">▼</span>
         </button>
         <div class="menu-drop">
-            <a href="relatorio_desempenho.php" target="_blank" rel="noopener noreferrer">
-                📊 Relatório de Desempenho
+
+            <a href="ranking_coordenadores.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">🏆</span>
+                <span class="texto">E1-Relatório de Coordenadores</span>
             </a>
-            <a href="relatorio_coordenadores.php" target="_blank" rel="noopener noreferrer">Relatório de Coordenadores</a>
-            <a href="mapa_calor_equipe.php" target="_blank" rel="noopener noreferrer">Mapa de Calor da Equipe</a>
-            <a href="cadastrar_coordenadores.php" target="_blank" rel="noopener noreferrer">Cad. Coordenadores</a>
-            <a href="cadastrar_liderancas.php" target="_blank" rel="noopener noreferrer">Cad. Lideranças</a>
+            <a href="ranking_liderancas.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">🥇</span>
+                <span class="texto">E2-Relatório de Lideranças</span>
+            </a>
+            <a href="mapa_calor_equipe.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">🗺️</span>
+                <span class="texto">E3-Mapa de Calor da Equipe</span>
+            </a>
+            <a href="cadastrar_coordenadores.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">👔</span>
+                <span class="texto">E4-Cad. Coordenadores</span>
+            </a>
+            <a href="cadastrar_liderancas.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">🤝</span>
+                <span class="texto">E5-Cad. Lideranças</span>
+            </a>
+            <a href="relatorio_desempenho.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">📊</span>
+                <span class="texto">E6-Relatório de Desempenho</span>
+            </a>
         </div>
     </div>
 
     <!-- Grupo Zonas -->
     <div class="dropdown">
         <button type="button" class="gatilho">
-            Zonas <span class="seta">▼</span>
+            🗳️ Zonas <span class="seta">▼</span>
         </button>
         <div class="menu-drop">
-            <a href="zonas.php" target="_blank" rel="noopener noreferrer">Visualizar Zonas</a>
-            <a href="editar_zonas.php" target="_blank" rel="noopener noreferrer">Editar Zonas</a>
+            <a href="zonas.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">👁️</span>
+                <span class="texto">Z1-Visualizar Zonas</span>
+            </a>
+            <a href="editar_zonas.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">✏️</span>
+                <span class="texto">Z2-Editar Zonas</span>
+            </a>
         </div>
     </div>
 
@@ -544,20 +603,24 @@ $__mostrarAdmin = ($__ehAdmin && $__ehDono);
         <div class="menu-drop">
             <a href="usuarios.php" target="_blank" rel="noopener noreferrer"
                class="<?= $__ehSuper ? 'admin-destaque' : '' ?>">
-                <span class="icone">👥</span> Usuários
+                <span class="icone">👥</span>
+                <span class="texto">Usuários</span>
             </a>
 
             <?php if ($__ehSuper): ?>
                 <div class="divisor"></div>
 
                 <a href="auditoria.php" target="_blank" rel="noopener noreferrer">
-                    <span class="icone">📝</span> Log de Auditoria
+                    <span class="icone">📝</span>
+                    <span class="texto">Log de Auditoria</span>
                 </a>
                 <a href="backup.php" target="_blank" rel="noopener noreferrer">
-                    <span class="icone">💾</span> Backup do Banco
+                    <span class="icone">💾</span>
+                    <span class="texto">Backup do Banco</span>
                 </a>
                 <a href="configuracoes.php" target="_blank" rel="noopener noreferrer">
-                    <span class="icone">⚙</span> Configurações do Sistema
+                    <span class="icone">⚙️</span>
+                    <span class="texto">Configurações do Sistema</span>
                 </a>
             <?php endif; ?>
         </div>

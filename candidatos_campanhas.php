@@ -24,12 +24,16 @@ $__ehAdmin      = ($__ehSuper || $__ehAdminNivel);
 
 $isAdmin = ($__ehAdmin && $__ehDono);
 
-$__rotuloPerfil = function_exists('rotuloPerfil')
-                    ? rotuloPerfil($__perfil)
-                    : strtoupper($__perfil);
-$__classePerfil = function_exists('classePerfil')
-                    ? classePerfil($__perfil)
-                    : ('perfil-' . $__perfil);
+if ($__ehSuper) {
+    $__classePerfil = 'super';
+    $__rotuloPerfil = 'SUPERADMIN';
+} elseif ($__ehAdminNivel) {
+    $__classePerfil = 'admin';
+    $__rotuloPerfil = 'ADMIN';
+} else {
+    $__classePerfil = 'visitante';
+    $__rotuloPerfil = 'VISITANTE';
+}
 
 if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -45,12 +49,47 @@ $pdo = new PDO(
     ]
 );
 
+// Aumenta o limite do GROUP_CONCAT
+$pdo->exec("SET SESSION group_concat_max_len = 1000000");
+
 $colunasVotos = $pdo->query("SHOW COLUMNS FROM votos")->fetchAll(PDO::FETCH_COLUMN);
 $temAno    = in_array('ano', $colunasVotos, true);
 $temNumero = in_array('numero', $colunasVotos, true);
 
+// ------------------------------------------------------------
+// Detectar coluna de seção
+//   1) tenta nomes conhecidos exatos
+//   2) fallback: qualquer coluna que contenha "secao" (case-insensitive,
+//      com normalização de acentos)
+// ------------------------------------------------------------
+$candidatasSecao = [
+    'numeroSecao','numero_secao','secao','nrSecao','NR_SECAO',
+    'numSecao','num_secao','secaoNumero','secao_numero',
+    'cdSecao','cd_secao','codSecao','cod_secao',
+    'nr_secao','secao_num'
+];
+$colSecao = '';
+foreach ($candidatasSecao as $cand) {
+    if (in_array($cand, $colunasVotos, true)) { $colSecao = $cand; break; }
+}
+if ($colSecao === '') {
+    foreach ($colunasVotos as $col) {
+        $norm = strtolower($col);
+        $norm = str_replace(
+            ['ç','ã','á','à','â','é','ê','í','ó','õ','ú'],
+            ['c','a','a','a','a','e','e','i','o','o','u'],
+            $norm
+        );
+        if (strpos($norm, 'secao') !== false) {
+            $colSecao = $col;
+            break;
+        }
+    }
+}
+$temSecao = ($colSecao !== '');
+
 // ============================================================
-// AJAX — detalhe sob demanda (lazy loading)
+// AJAX — detalhe sob demanda
 // ============================================================
 if (isset($_GET['ajax']) && $_GET['ajax'] === 'detalhe') {
     header('Content-Type: application/json; charset=utf-8');
@@ -72,7 +111,6 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'detalhe') {
         }
         $ws = 'WHERE ' . implode(' AND ', $w);
 
-        // Por região
         $sqlR = "
             SELECT COALESCE(r.nome, 'Sem região') AS regiao,
                    SUM(v.qtdVotos) AS total
@@ -89,7 +127,6 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'detalhe') {
         $stmt->execute($p);
         $porRegiao = $stmt->fetchAll();
 
-        // Top 15 municípios
         $sqlM = "
             SELECT
                 v.nomeMunicipio,
@@ -122,7 +159,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'detalhe') {
 }
 
 // ------------------------------------------------------------
-// Apagar campanha (POST) — só admin (SEM backup)
+// Apagar campanha (POST) — só admin
 // ------------------------------------------------------------
 $flash = $_SESSION['flash'] ?? '';
 unset($_SESSION['flash']);
@@ -130,11 +167,11 @@ unset($_SESSION['flash']);
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'apagar_campanha') {
     if (!$isAdmin) {
         http_response_code(403);
-        die('Acesso negado. Apenas administradores autorizados podem apagar registros.');
+        die('Acesso negado.');
     }
     if (!hash_equals($csrf, $_POST['csrf_token'] ?? '')) {
         http_response_code(400);
-        die('Token de segurança inválido. Recarregue a página.');
+        die('Token de segurança inválido.');
     }
 
     $delCandidato = trim($_POST['del_candidato'] ?? '');
@@ -187,11 +224,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['acao'] ?? '') === 'apagar_
 // ============================================================
 // FILTROS
 // ============================================================
-$ano        = $_GET['ano']        ?? '';
-$cargo      = $_GET['cargo']      ?? '';
-$candidato  = $_GET['candidato']  ?? '';
-$regiao     = $_GET['regiao']     ?? '';
-$ordem      = $_GET['ordem']      ?? 'votos';
+$ano       = $_GET['ano']       ?? '';
+$cargo     = $_GET['cargo']     ?? '';
+$candidato = $_GET['candidato'] ?? '';
+$regiao    = $_GET['regiao']    ?? '';
+$ordem     = $_GET['ordem']     ?? 'votos';
 
 $filtros = [];
 $params  = [];
@@ -208,7 +245,6 @@ if ($candidato !== '') {
     $filtros[] = "v.nomeCandidatoResp = :candidato";
     $params[':candidato'] = $candidato;
 }
-// >>> Só adiciona filtro de região se o usuário filtrar (evita JOIN desnecessário)
 if ($regiao !== '') {
     $filtros[] = "EXISTS (
         SELECT 1 FROM municipio_regiao mr
@@ -223,8 +259,6 @@ $where = $filtros ? 'WHERE ' . implode(' AND ', $filtros) : '';
 
 $colAnoSelect = $temAno ? "v.ano," : "";
 $colAnoGroup  = $temAno ? "v.ano," : "";
-$colAnoOrder  = $temAno ? "v.ano DESC," : "";
-
 $colNumeroSelect = $temNumero ? "MAX(v.numero) AS numero," : "";
 
 switch ($ordem) {
@@ -235,9 +269,6 @@ switch ($ordem) {
     default:      $orderBy = $temAno ? "v.ano DESC, total DESC" : "total DESC"; break;
 }
 
-// ============================================================
-// CAMPANHAS (sem JOIN se não filtrar região)
-// ============================================================
 $sqlCampanhas = "
     SELECT
         $colAnoSelect
@@ -260,7 +291,173 @@ $totalVotosFiltro = 0;
 foreach ($campanhas as $c) $totalVotosFiltro += (int)$c['total'];
 
 // ============================================================
-// RANKINGS — derivados de $campanhas (zero queries extras)
+// KPIs filtrados
+// ============================================================
+$sqlKpiFiltro = "
+    SELECT
+        COUNT(DISTINCT v.nomeCandidatoResp) AS total_candidatos,
+        COUNT(DISTINCT v.nomeCargoPerg)     AS total_cargos,
+        SUM(v.qtdVotos)                     AS total_geral,
+        " . ($temAno ? "COUNT(DISTINCT v.ano)" : "0") . " AS total_anos,
+        COUNT(DISTINCT v.nomeMunicipio)     AS total_municipios,
+        COUNT(DISTINCT v.numeroZona)        AS total_zonas
+    FROM votos v
+    $where
+";
+$stmt = $pdo->prepare($sqlKpiFiltro);
+$stmt->execute($params);
+$rowKpiFiltro = $stmt->fetch();
+
+$totalCandidatos  = (int)($rowKpiFiltro['total_candidatos']  ?? 0);
+$totalCargos      = (int)($rowKpiFiltro['total_cargos']      ?? 0);
+$totalGeralFiltro = (int)($rowKpiFiltro['total_geral']       ?? 0);
+$totalAnos        = (int)($rowKpiFiltro['total_anos']        ?? 0);
+$totalMunicipios  = (int)($rowKpiFiltro['total_municipios']  ?? 0);
+$totalZonas       = (int)($rowKpiFiltro['total_zonas']       ?? 0);
+
+if ($temAno) {
+    $sqlCampCount = "SELECT COUNT(*) FROM (
+        SELECT DISTINCT v.nomeCandidatoResp, v.nomeCargoPerg, v.ano
+        FROM votos v
+        $where
+    ) t";
+} else {
+    $sqlCampCount = "SELECT COUNT(*) FROM (
+        SELECT DISTINCT v.nomeCandidatoResp, v.nomeCargoPerg
+        FROM votos v
+        $where
+    ) t";
+}
+$stmt = $pdo->prepare($sqlCampCount);
+$stmt->execute($params);
+$totalCampanhasFiltro = (int)$stmt->fetchColumn();
+
+// KPIs globais (referência)
+$colCountAno = $temAno ? "COUNT(DISTINCT ano)" : "0";
+$rowKpiBanco = $pdo->query("
+    SELECT
+        COUNT(DISTINCT nomeCandidatoResp) AS total_candidatos,
+        COUNT(DISTINCT nomeCargoPerg)     AS total_cargos,
+        SUM(qtdVotos)                     AS total_geral,
+        $colCountAno                      AS total_anos
+    FROM votos
+")->fetch();
+
+$totalCandidatosBanco = (int)$rowKpiBanco['total_candidatos'];
+$totalCargosBanco     = (int)$rowKpiBanco['total_cargos'];
+$totalGeralBanco      = (int)$rowKpiBanco['total_geral'];
+$totalAnosBanco       = (int)$rowKpiBanco['total_anos'];
+
+if ($temAno) {
+    $totalCampanhasBanco = (int)$pdo->query(
+        "SELECT COUNT(*) FROM (
+            SELECT DISTINCT nomeCandidatoResp, nomeCargoPerg, ano FROM votos
+         ) t"
+    )->fetchColumn();
+} else {
+    $totalCampanhasBanco = (int)$pdo->query(
+        "SELECT COUNT(*) FROM (
+            SELECT DISTINCT nomeCandidatoResp, nomeCargoPerg FROM votos
+         ) t"
+    )->fetchColumn();
+}
+
+// ============================================================
+// VOTOS POR REGIÃO
+// ============================================================
+$sqlRegioesFiltro = "
+    SELECT
+        COALESCE(r.nome, 'Sem região') AS regiao,
+        COUNT(DISTINCT v.nomeMunicipio) AS qtd_municipios,
+        COUNT(DISTINCT v.numeroZona)    AS qtd_zonas,
+        COUNT(DISTINCT v.nomeCandidatoResp) AS qtd_candidatos,
+        SUM(v.qtdVotos)                 AS total
+    FROM votos v
+    LEFT JOIN municipio_regiao mr
+      ON mr.nomeMunicipio COLLATE utf8mb4_general_ci
+       = v.nomeMunicipio  COLLATE utf8mb4_general_ci
+    LEFT JOIN regioes r ON r.id = mr.regiao_id
+    $where
+    GROUP BY r.nome
+    ORDER BY total DESC
+";
+$stmt = $pdo->prepare($sqlRegioesFiltro);
+$stmt->execute($params);
+$porRegiao = $stmt->fetchAll();
+
+$maxVotosRegiao = 0;
+foreach ($porRegiao as $r) {
+    if ((int)$r['total'] > $maxVotosRegiao) $maxVotosRegiao = (int)$r['total'];
+}
+
+// ============================================================
+// LISTAGEM DETALHADA POR MUNICÍPIO
+// ============================================================
+$colSecaoSelect = $temSecao ? ",
+        COUNT(DISTINCT v.`$colSecao`) AS qtd_secoes,
+        GROUP_CONCAT(DISTINCT v.`$colSecao` ORDER BY v.`$colSecao` SEPARATOR ',') AS secoes_lista
+    " : "";
+
+$sqlMunicipios = "
+    SELECT
+        v.nomeMunicipio,
+        COALESCE(r.nome, 'Sem região') AS regiao,
+        SUM(v.qtdVotos) AS total,
+        COUNT(DISTINCT v.numeroZona) AS qtd_zonas,
+        COUNT(DISTINCT v.nomeCandidatoResp) AS qtd_candidatos,
+        GROUP_CONCAT(DISTINCT v.numeroZona ORDER BY v.numeroZona SEPARATOR ',') AS zonas_lista
+        $colSecaoSelect
+    FROM votos v
+    LEFT JOIN municipio_regiao mr
+      ON mr.nomeMunicipio COLLATE utf8mb4_general_ci
+       = v.nomeMunicipio  COLLATE utf8mb4_general_ci
+    LEFT JOIN regioes r ON r.id = mr.regiao_id
+    $where
+    GROUP BY v.nomeMunicipio, r.nome
+    ORDER BY total DESC
+";
+$stmt = $pdo->prepare($sqlMunicipios);
+$stmt->execute($params);
+$municipiosDetalhado = $stmt->fetchAll();
+
+// ------------------------------------------------------------
+// Helper: gera chips HTML COM ESPAÇO entre eles
+// ------------------------------------------------------------
+function renderTags($lista, $prefixo, $classeCss) {
+    if (empty($lista)) return '<span style="color:#bbb;">—</span>';
+    $itens = array_filter(array_map('trim', explode(',', (string)$lista)), function ($x) {
+        return $x !== '';
+    });
+    usort($itens, function ($a, $b) { return ((int)$a) <=> ((int)$b); });
+
+    $partes = [];
+    foreach ($itens as $it) {
+        $partes[] = '<span class="' . $classeCss . '">'
+                  . $prefixo . htmlspecialchars($it)
+                  . '</span>';
+    }
+    return implode(' ', $partes);       // espaço entre chips
+}
+
+// ------------------------------------------------------------
+// Helper: texto puro para data-search (vai no <td>)
+// ------------------------------------------------------------
+function tagsSearchText($lista, $prefixo) {
+    if (empty($lista)) return '';
+    $itens = array_filter(array_map('trim', explode(',', (string)$lista)), function ($x) {
+        return $x !== '';
+    });
+    usort($itens, function ($a, $b) { return ((int)$a) <=> ((int)$b); });
+
+    $out = [];
+    foreach ($itens as $it) {
+        $out[] = $prefixo . $it;
+    }
+    return implode(' ', $out);
+}
+
+// ============================================================
+// RANKINGS
 // ============================================================
 $aggCand = [];
 foreach ($campanhas as $c) {
@@ -310,39 +507,6 @@ usort($rankingCargos, function ($a, $b) use ($temAno) {
 });
 
 // ============================================================
-// KPIs — UMA query em vez de 5
-// ============================================================
-$colCountAno = $temAno ? "COUNT(DISTINCT ano)" : "0";
-
-$rowKpi = $pdo->query("
-    SELECT
-        COUNT(DISTINCT nomeCandidatoResp) AS total_candidatos,
-        COUNT(DISTINCT nomeCargoPerg)     AS total_cargos,
-        SUM(qtdVotos)                     AS total_geral,
-        $colCountAno                      AS total_anos
-    FROM votos
-")->fetch();
-
-$totalCandidatos = (int)$rowKpi['total_candidatos'];
-$totalCargos     = (int)$rowKpi['total_cargos'];
-$totalGeralBanco = (int)$rowKpi['total_geral'];
-$totalAnos       = (int)$rowKpi['total_anos'];
-
-if ($temAno) {
-    $totalCampanhasBanco = (int)$pdo->query(
-        "SELECT COUNT(*) FROM (
-            SELECT DISTINCT nomeCandidatoResp, nomeCargoPerg, ano FROM votos
-         ) t"
-    )->fetchColumn();
-} else {
-    $totalCampanhasBanco = (int)$pdo->query(
-        "SELECT COUNT(*) FROM (
-            SELECT DISTINCT nomeCandidatoResp, nomeCargoPerg FROM votos
-         ) t"
-    )->fetchColumn();
-}
-
-// ============================================================
 // LISTAS PARA SELECTS
 // ============================================================
 $anosDisponiveis = [];
@@ -369,6 +533,11 @@ $temFiltro = $ano || $cargo || $candidato || $regiao;
 $numColunas = ($temAno ? 8 : 7) + 1 + 1 + ($isAdmin ? 1 : 0);
 
 $debugSessao = isset($_GET['debug_sessao']);
+$debugSecao  = isset($_GET['debug_secao']);
+
+$pctFiltroBanco = $totalGeralBanco > 0
+    ? ($totalGeralFiltro / $totalGeralBanco) * 100
+    : 0;
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -376,53 +545,39 @@ $debugSessao = isset($_GET['debug_sessao']);
 <meta charset="utf-8">
 <title>Candidatos e Campanhas</title>
 <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css">
 <style>
     body { font-family: Arial, sans-serif; margin: 20px; background:#f7f7f7; color:#333; }
     h1 { color:#333; }
     h2 { margin-top:30px; }
 
     .barra-usuario {
-        background:#fff; padding:10px 16px; border-radius:6px;
-        box-shadow:0 1px 3px rgba(0,0,0,.08);
-        display:flex; align-items:center; gap:12px; flex-wrap:wrap;
-        font-size:13.5px; margin-bottom:18px;
-        border-left:5px solid #6c757d;
+        display: flex; align-items: center; gap: 12px;
+        background: #fff; padding: 10px 16px; border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 18px; font-size: 13px;
     }
-    .barra-usuario.admin { border-left-color:#ffc107; }
-    .barra-usuario.super { border-left-color:#dc3545; }
-    .barra-usuario .nome-user { font-weight:bold; color:#333; }
-    .badge-admin {
-        display:inline-flex; align-items:center; gap:5px;
-        background:#fff3cd; color:#856404;
-        padding:3px 10px; border-radius:12px;
-        font-size:11px; font-weight:bold; letter-spacing:.3px;
-    }
-    .badge-super {
-        display:inline-flex; align-items:center; gap:5px;
-        background:#dc3545; color:#fff;
-        padding:3px 10px; border-radius:12px;
-        font-size:11px; font-weight:bold; letter-spacing:.3px;
-    }
-    .badge-visitante {
-        display:inline-flex; align-items:center; gap:5px;
-        background:#e9ecef; color:#495057;
-        padding:3px 10px; border-radius:12px;
-        font-size:11px; font-weight:bold; letter-spacing:.3px;
-    }
+    .barra-usuario.super { border-left: 5px solid #6f42c1; }
+    .barra-usuario.admin { border-left: 5px solid #0d6efd; }
+    .nome-user { font-weight: 600; }
     .perfil-tag {
-        font-size:10px; padding:2px 8px; border-radius:8px;
-        font-weight:bold; letter-spacing:.5px;
-        background:#e6f0fa; color:#0069d9;
+        background: #e9ecef; color: #495057;
+        padding: 2px 10px; border-radius: 12px;
+        font-size: 11px; font-weight: 600; text-transform: uppercase;
     }
-    .perfil-tag.perfil-super    { background:#dc3545; color:#fff; }
-    .perfil-tag.perfil-admin    { background:#fff3cd; color:#856404; }
-    .perfil-tag.perfil-consulta { background:#e6f0fa; color:#0069d9; }
+    .perfil-tag.admin { background:#0d6efd; color:#fff; }
+    .perfil-tag.super { background:#6f42c1; color:#fff; }
+    .perfil-tag.perfil-admin    { background:#0d6efd; color:#fff; }
+    .perfil-tag.perfil-super,
+    .perfil-tag.perfil-superadmin { background:#6f42c1; color:#fff; }
+    .perfil-tag.perfil-consulta,
+    .perfil-tag.perfil-visitante  { background:#e9ecef; color:#495057; }
 
-    .link-debug {
-        margin-left:auto; font-size:12px; color:#0069d9; text-decoration:none;
-        background:#e7f3ff; padding:4px 10px; border-radius:12px;
-    }
-    .link-debug:hover { background:#cfe2ff; text-decoration:underline; }
+    .badge-super     { background:#6f42c1; color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .badge-admin     { background:#0d6efd; color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; }
+    .badge-visitante { background:#e9ecef; color:#495057; padding:2px 10px; border-radius:12px; font-size:11px; }
+
+    .link-debug { margin-left: auto; color: #6c757d; text-decoration: none; font-size: 12px; }
+    .link-debug:hover { color: #0d6efd; text-decoration: underline; }
 
     .debug-box {
         background:#1e1e1e; color:#d4d4d4;
@@ -436,12 +591,14 @@ $debugSessao = isset($_GET['debug_sessao']);
     .debug-box .aviso    { color:#f48771; }
     .debug-box .ok       { color:#b5e8b5; }
 
-    .kpis { display:flex; gap:15px; flex-wrap:wrap; margin-bottom:20px; }
+    .kpis { display:flex; gap:15px; flex-wrap:wrap; margin-bottom:12px; }
     .kpi {
         background:#fff; border-radius:8px; padding:15px 25px;
         box-shadow:0 1px 3px rgba(0,0,0,.1); min-width:190px;
         border-left:5px solid #0069d9;
+        transition: transform .12s, box-shadow .12s;
     }
+    .kpi:hover { transform: translateY(-2px); box-shadow:0 4px 12px rgba(0,0,0,.12); }
     .kpi .rotulo { font-size:12px; text-transform:uppercase; color:#666; letter-spacing:1px; }
     .kpi .valor  { font-size:28px; font-weight:bold; color:#0069d9; margin-top:4px; }
     .kpi .sub    { font-size:12px; color:#888; margin-top:2px; }
@@ -451,6 +608,18 @@ $debugSessao = isset($_GET['debug_sessao']);
     .kpi.laranja { border-left-color:#fd7e14; } .kpi.laranja .valor { color:#fd7e14; }
     .kpi.vermelho{ border-left-color:#dc3545; } .kpi.vermelho .valor { color:#dc3545; }
     .kpi.teal    { border-left-color:#20c997; } .kpi.teal .valor { color:#20c997; }
+    .kpi.ativo   { box-shadow:0 3px 10px rgba(0,105,217,.2); }
+
+    .kpi-banco {
+        background: #fafafa; border-left: 4px solid #ccc;
+        padding: 8px 16px; border-radius: 6px;
+        display: inline-flex; flex-wrap:wrap; align-items:baseline;
+        gap: 18px; font-size: 12px; color: #666;
+        margin-bottom: 22px;
+    }
+    .kpi-banco strong { color:#333; font-size:14px; }
+    .kpi-banco .tag  { text-transform:uppercase; font-size:10.5px;
+                       letter-spacing:.6px; color:#888; margin-right:4px; }
 
     form { background:#fff; padding:15px; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,.1); margin-bottom:20px; }
     label { display:inline-block; margin-right:10px; font-weight:bold; }
@@ -487,14 +656,13 @@ $debugSessao = isset($_GET['debug_sessao']);
         display:inline-block; width:140px; vertical-align:middle;
     }
     .barra > span { display:block; height:100%; background:#0069d9; }
+    .barra.barra-teal  > span { background:#20c997; }
+    .barra.barra-roxo  > span { background:#6f42c1; }
+    .barra.barra-verde > span { background:#28a745; }
 
     td.col-numero {
-        text-align: center;
-        font-weight: bold;
-        font-size: 14px;
-        color: #0053b3;
-        font-family: 'Courier New', monospace;
-        min-width: 50px;
+        text-align: center; font-weight: bold; font-size: 14px;
+        color: #0053b3; font-family: 'Courier New', monospace; min-width: 50px;
     }
     th.col-numero { text-align: center; }
     .numero-vazio { color:#ccc; font-weight: normal; }
@@ -518,6 +686,7 @@ $debugSessao = isset($_GET['debug_sessao']);
     }
     .badge-ano   { background:#e7f3ff; color:#0069d9; }
     .badge-cargo { background:#e6f0fa; color:#0069d9; }
+    .badge-regiao { background:#e6f9f0; color:#0f8a54; }
 
     .aviso { background:#fff3cd; border-left:5px solid #ffc107;
              padding:12px 16px; border-radius:6px; margin-bottom:20px; }
@@ -545,10 +714,7 @@ $debugSessao = isset($_GET['debug_sessao']);
     .btn-lixeira:hover { background: #ffe0e0; opacity: 1; transform: scale(1.15); }
     .col-acoes { text-align: center; width: 52px; }
 
-    /* Spinner / carregando no detalhe */
-    .detalhe-loading {
-        padding: 24px; text-align: center; color: #888; font-size: 13px;
-    }
+    .detalhe-loading { padding: 24px; text-align: center; color: #888; font-size: 13px; }
     .detalhe-loading .spinner {
         display: inline-block; width: 22px; height: 22px;
         border: 3px solid #e0e0e0; border-top-color: #0069d9;
@@ -557,7 +723,6 @@ $debugSessao = isset($_GET['debug_sessao']);
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Modal */
     #modal-apagar {
         position: fixed; inset: 0;
         background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
@@ -581,13 +746,10 @@ $debugSessao = isset($_GET['debug_sessao']);
     }
     #modal-apagar .corpo .destaque b { color: #b71c1c; }
     #modal-apagar .destaque-numero {
-        display: inline-block;
-        background: #0053b3; color: #fff;
+        display: inline-block; background: #0053b3; color: #fff;
         padding: 4px 12px; border-radius: 6px;
         font-family: 'Courier New', monospace;
-        font-size: 18px; font-weight: bold;
-        letter-spacing: 1px;
-        margin-left: 4px;
+        font-size: 18px; font-weight: bold; letter-spacing: 1px; margin-left: 4px;
     }
     #modal-apagar .aviso-forte {
         margin-top: 12px; font-weight: bold; color: #b71c1c;
@@ -615,6 +777,182 @@ $debugSessao = isset($_GET['debug_sessao']);
     }
     #modal-apagar .btn-apagar:hover:not(:disabled) { background: #b71c1c; }
     #modal-apagar .btn-apagar:disabled { background: #e0aeb4; cursor: not-allowed; opacity: .7; }
+
+    /* ============ Regiões ============ */
+    .regioes-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        gap: 14px; margin-bottom: 28px;
+    }
+    .regiao-card {
+        background:#fff; border-radius:8px; padding:14px 16px;
+        box-shadow:0 1px 3px rgba(0,0,0,.1);
+        border-left:5px solid #20c997;
+        transition: transform .12s, box-shadow .12s; cursor: default;
+    }
+    .regiao-card:hover { transform: translateY(-2px); box-shadow:0 4px 12px rgba(0,0,0,.12); }
+    .regiao-card .rg-nome {
+        font-weight:bold; color:#0f8a54; font-size:14px;
+        display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;
+    }
+    .regiao-card .rg-nome .rg-pos {
+        background:#e6f9f0; color:#0f8a54;
+        padding:1px 8px; border-radius:12px; font-size:11px; font-weight:600;
+    }
+    .regiao-card .rg-total { font-size:22px; font-weight:bold; color:#0069d9; margin:4px 0 2px; }
+    .regiao-card .rg-total small { font-size:11px; color:#888; font-weight:normal; margin-left:4px; }
+    .regiao-card .rg-sub { font-size:11px; color:#666; margin-bottom:6px; }
+    .regiao-card .rg-barra {
+        background:#eaf7f1; border-radius:4px; height:8px;
+        overflow:hidden; margin-top:6px;
+    }
+    .regiao-card .rg-barra > span {
+        display:block; height:100%; background:#20c997; transition: width .4s ease;
+    }
+    .regiao-card .rg-pct {
+        font-size:11px; color:#0f8a54; margin-top:4px;
+        text-align:right; font-weight:600;
+    }
+
+    /* ============ DataTable ============ */
+    .dt-wrapper {
+        background: #fff; border-radius: 8px; padding: 18px 20px;
+        box-shadow: 0 1px 3px rgba(0,0,0,.1); margin-bottom: 24px;
+    }
+    .dt-header {
+        display: flex; justify-content: space-between; align-items: center;
+        flex-wrap: wrap; gap: 12px; margin-bottom: 12px;
+        border-bottom: 1px solid #eee; padding-bottom: 10px;
+    }
+    .dt-header h3 {
+        margin: 0; font-size: 16px; color: #0069d9;
+        display: flex; align-items: center; gap: 8px;
+    }
+    .dt-header .dt-badge {
+        font-size: 11px; padding: 2px 10px; border-radius: 12px;
+        background: #e7f3ff; color: #0069d9; font-weight: 600;
+        text-transform: uppercase; letter-spacing: .5px;
+    }
+    .dt-header .dt-total { font-size: 12px; color: #888; }
+
+    /* Filtros dedicados Zona / Seção */
+    .dt-filtros {
+        display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px;
+        background: #f6f9fd; border: 1px solid #dbe6f5; border-radius: 8px;
+        padding: 12px 16px; margin-bottom: 14px;
+    }
+    .dt-filtros .filtro-item {
+        display: flex; flex-direction: column; gap: 4px;
+        position: relative;
+    }
+    .dt-filtros .filtro-item label {
+        font-size: 12px; font-weight: bold; color: #0b3d91;
+        letter-spacing: .3px;
+    }
+    .dt-filtros .filtro-item input {
+        padding: 7px 30px 7px 12px;
+        border: 1.5px solid #ccd; border-radius: 6px;
+        font-size: 14px; font-family: 'Courier New', monospace;
+        width: 180px; transition: border-color .12s, box-shadow .12s;
+        background: #fff;
+    }
+    .dt-filtros .filtro-item input:focus {
+        outline: none; border-color: #0069d9;
+        box-shadow: 0 0 0 3px rgba(0,105,217,.15);
+    }
+    .dt-filtros .filtro-clear {
+        position: absolute; right: 6px; bottom: 7px;
+        background: transparent; border: none; cursor: pointer;
+        color: #999; font-size: 16px; line-height: 1;
+        padding: 2px 6px; border-radius: 4px;
+    }
+    .dt-filtros .filtro-clear:hover { background: #f0f0f0; color: #dc3545; }
+    .dt-filtros .filtro-limpar-todos {
+        background: #6c757d; color: #fff; padding: 8px 16px;
+        border-radius: 6px; border: none; cursor: pointer;
+        font-size: 13px; font-weight: bold; align-self: flex-end;
+        margin-bottom: 1px;
+    }
+    .dt-filtros .filtro-limpar-todos:hover { background: #5a6268; }
+    .dt-filtros .filtro-info {
+        font-size: 11.5px; color: #666; margin-left: auto; align-self: center;
+    }
+    .dt-filtros .filtro-info code {
+        background:#fff; padding:1px 5px; border-radius:3px;
+        border:1px solid #dbe6f5; font-size:11px;
+    }
+
+    /* Tabela DataTable */
+    #tabela-municipios_wrapper { width: 100%; }
+    #tabela-municipios {
+        font-size: 13px;
+        border-collapse: collapse;
+    }
+    #tabela-municipios thead th {
+        background: #0069d9; color: #fff; font-size: 12px;
+        text-align: left; padding: 8px 10px; border: 1px solid #0053b3;
+        white-space: nowrap;
+    }
+    #tabela-municipios thead th.sorting,
+    #tabela-municipios thead th.sorting_asc,
+    #tabela-municipios thead th.sorting_desc { position: relative; padding-right: 22px; }
+    #tabela-municipios tbody td {
+        padding: 7px 10px; border: 1px solid #e6e6e6;
+        vertical-align: top;
+    }
+    #tabela-municipios tbody tr:hover { background: #f4f8ff !important; }
+    #tabela-municipios tbody td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    #tabela-municipios tbody td.pos { text-align: center; color: #888; width: 40px; }
+
+    .tags-cell {
+        max-width: 260px; max-height: 90px; overflow-y: auto;
+        line-height: 1.6;
+        padding-right: 4px;
+    }
+    .tags-cell::-webkit-scrollbar { width: 6px; }
+    .tags-cell::-webkit-scrollbar-thumb { background: #ccd; border-radius: 3px; }
+
+    .tag-zona, .tag-secao {
+        display: inline-block;
+        padding: 1px 6px;
+        margin: 2px 3px 2px 0;
+        border-radius: 10px;
+        font-size: 10.5px;
+        font-family: 'Courier New', monospace;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+    .tag-zona  { background: #e7f3ff; color: #0053b3; border: 1px solid #cfe2ff; }
+    .tag-secao { background: #e6f9f0; color: #0f8a54; border: 1px solid #c7efd9; }
+
+    /* DataTables controles */
+    .dataTables_wrapper .dataTables_filter input,
+    .dataTables_wrapper .dataTables_length select {
+        padding: 5px 8px; border-radius: 4px; border: 1px solid #ccc;
+        font-size: 13px; margin-left: 6px;
+    }
+    .dataTables_wrapper .dataTables_info,
+    .dataTables_wrapper .dataTables_length,
+    .dataTables_wrapper .dataTables_filter,
+    .dataTables_wrapper .dataTables_paginate {
+        font-size: 12.5px; color: #666;
+    }
+    .dataTables_wrapper .dataTables_filter { margin-bottom: 8px; }
+    .dataTables_wrapper .dataTables_paginate .paginate_button {
+        padding: 4px 10px !important;
+        border-radius: 4px !important;
+        font-size: 12.5px !important;
+    }
+    .dataTables_wrapper .dataTables_paginate .paginate_button.current {
+        background: #0069d9 !important;
+        color: #fff !important;
+        border-color: #0053b3 !important;
+    }
+    .dataTables_wrapper .dataTables_paginate .paginate_button:hover {
+        background: #eaf3fb !important;
+        color: #0069d9 !important;
+        border-color: #cfe2ff !important;
+    }
 </style>
 </head>
 <body>
@@ -623,7 +961,7 @@ $debugSessao = isset($_GET['debug_sessao']);
 
 <h1>Candidatos e Campanhas</h1>
 
-<div class="barra-usuario <?= $isAdmin ? ($__ehSuper ? 'super' : 'admin') : '' ?>">
+<div class="barra-usuario <?= $__ehAdmin ? ($__ehSuper ? 'super' : 'admin') : '' ?>">
     <span>👤 <span class="nome-user"><?= htmlspecialchars($__u['nome'] ?? '—') ?></span></span>
     <span class="perfil-tag <?= htmlspecialchars($__classePerfil) ?>">
         <?= htmlspecialchars($__rotuloPerfil) ?>
@@ -633,7 +971,7 @@ $debugSessao = isset($_GET['debug_sessao']);
             <?= $__ehSuper ? '🔓 superadmin' : '🔓 administrador' ?>
         </span>
     <?php elseif ($__ehAdmin && !$__ehDono): ?>
-        <span class="badge-visitante">👁️ admin (não autorizado a excluir)</span>
+        <span class="badge-admin">🔓 admin (não autorizado a excluir)</span>
     <?php else: ?>
         <span class="badge-visitante">👁️ visitante</span>
     <?php endif; ?>
@@ -661,8 +999,36 @@ $debugSessao = isset($_GET['debug_sessao']);
 
 <span class="destaque">Coluna 'numero' existe em votos?</span> <?= $temNumero ? '<span class="ok">SIM ✔</span>' : '<span class="aviso">NÃO ✘</span>' ?>
 
+<span class="destaque">Coluna de seção detectada:</span> <?= $temSecao ? '<span class="ok">' . htmlspecialchars($colSecao) . '</span>' : '<span class="aviso">(NENHUMA)</span>' ?>
+
 <span class="destaque">Array retornado por usuarioLogado():</span>
 <?= htmlspecialchars(print_r($__u, true)) ?>
+</pre>
+    </div>
+<?php endif; ?>
+
+<?php if ($debugSecao): ?>
+    <div class="debug-box">
+        <h3>🔍 Diagnóstico da coluna de seção</h3>
+<pre style="margin:0; white-space:pre-wrap;">
+<span class="destaque">Colunas em `votos`:</span>
+<?= htmlspecialchars(implode(', ', $colunasVotos)) ?>
+
+<span class="destaque">Coluna de seção detectada:</span>
+<?= $temSecao
+    ? '<span class="ok">' . htmlspecialchars($colSecao) . '</span>'
+    : '<span class="aviso">(NENHUMA — nenhuma coluna com "secao" no nome)</span>' ?>
+
+<span class="destaque">Total de municípios carregados:</span> <?= count($municipiosDetalhado) ?>
+
+<span class="destaque">Primeiras 5 linhas do secoes_lista:</span>
+<?php foreach (array_slice($municipiosDetalhado, 0, 5) as $m): ?>
+  • <?= htmlspecialchars($m['nomeMunicipio']) ?>
+      qtd_secoes   = <?= (int)($m['qtd_secoes'] ?? 0) ?>
+
+      secoes_lista = <?= htmlspecialchars((string)($m['secoes_lista'] ?? '(NULL)')) ?>
+
+<?php endforeach; ?>
 </pre>
     </div>
 <?php endif; ?>
@@ -687,26 +1053,65 @@ $debugSessao = isset($_GET['debug_sessao']);
     </div>
 <?php endif; ?>
 
+<?php if (!$temSecao): ?>
+    <div class="aviso">
+        <strong>Atenção:</strong> nenhuma coluna de seção foi encontrada em <code>votos</code>.
+        A coluna "Seções" ficará vazia. Colunas existentes:
+        <code><?= htmlspecialchars(implode(', ', $colunasVotos)) ?></code>.
+        Se a coluna existir com outro nome, acrescente em <code>$candidatasSecao</code>
+        ou verifique com <a href="?debug_secao=1">?debug_secao=1</a>.
+    </div>
+<?php endif; ?>
+
+<!-- KPIs -->
 <div class="kpis">
-    <div class="kpi"><div class="rotulo">Candidatos</div>
-        <div class="valor"><?= number_format($totalCandidatos, 0, ',', '.') ?></div></div>
-    <div class="kpi roxo"><div class="rotulo">Cargos</div>
-        <div class="valor"><?= number_format($totalCargos, 0, ',', '.') ?></div></div>
-    <div class="kpi laranja">
-        <div class="rotulo">Campanhas<?= $temAno ? ' (cand × cargo × ano)' : ' (cand × cargo)' ?></div>
-        <div class="valor"><?= number_format($totalCampanhasBanco, 0, ',', '.') ?></div></div>
+    <div class="kpi <?= $temFiltro ? 'ativo' : '' ?>">
+        <div class="rotulo">Candidatos<?= $temFiltro ? ' (filtro)' : '' ?></div>
+        <div class="valor"><?= number_format($totalCandidatos, 0, ',', '.') ?></div>
+    </div>
+    <div class="kpi roxo <?= $temFiltro ? 'ativo' : '' ?>">
+        <div class="rotulo">Cargos<?= $temFiltro ? ' (filtro)' : '' ?></div>
+        <div class="valor"><?= number_format($totalCargos, 0, ',', '.') ?></div>
+    </div>
+    <div class="kpi laranja <?= $temFiltro ? 'ativo' : '' ?>">
+        <div class="rotulo">Campanhas<?= $temAno ? ' (cand × cargo × ano)' : ' (cand × cargo)' ?><?= $temFiltro ? ' (filtro)' : '' ?></div>
+        <div class="valor"><?= number_format($totalCampanhasFiltro, 0, ',', '.') ?></div>
+    </div>
     <?php if ($temAno && $totalAnos > 0): ?>
-        <div class="kpi teal"><div class="rotulo">Anos distintos</div>
-            <div class="valor"><?= number_format($totalAnos, 0, ',', '.') ?></div></div>
+        <div class="kpi teal <?= $temFiltro ? 'ativo' : '' ?>">
+            <div class="rotulo">Anos distintos<?= $temFiltro ? ' (filtro)' : '' ?></div>
+            <div class="valor"><?= number_format($totalAnos, 0, ',', '.') ?></div>
+        </div>
     <?php endif; ?>
-    <div class="kpi verde"><div class="rotulo">Total de votos no banco</div>
-        <div class="valor"><?= number_format($totalGeralBanco, 0, ',', '.') ?></div></div>
-    <?php if ($temFiltro): ?>
-        <div class="kpi vermelho"><div class="rotulo">Votos no filtro atual</div>
-            <div class="valor"><?= number_format($totalVotosFiltro, 0, ',', '.') ?></div>
-            <div class="sub"><?= number_format(count($campanhas), 0, ',', '.') ?> campanha(s)</div></div>
-    <?php endif; ?>
+    <div class="kpi verde <?= $temFiltro ? 'ativo' : '' ?>">
+        <div class="rotulo">Total de votos<?= $temFiltro ? ' (filtro)' : ' no banco' ?></div>
+        <div class="valor"><?= number_format($totalGeralFiltro, 0, ',', '.') ?></div>
+        <?php if ($temFiltro && $totalGeralBanco > 0): ?>
+            <div class="sub"><?= number_format($pctFiltroBanco, 2, ',', '.') ?>% do banco</div>
+        <?php endif; ?>
+    </div>
+    <div class="kpi <?= $temFiltro ? 'ativo' : '' ?>">
+        <div class="rotulo">Municípios<?= $temFiltro ? ' (filtro)' : '' ?></div>
+        <div class="valor"><?= number_format($totalMunicipios, 0, ',', '.') ?></div>
+    </div>
+    <div class="kpi cinza <?= $temFiltro ? 'ativo' : '' ?>">
+        <div class="rotulo">Zonas<?= $temFiltro ? ' (filtro)' : '' ?></div>
+        <div class="valor"><?= number_format($totalZonas, 0, ',', '.') ?></div>
+    </div>
 </div>
+
+<?php if ($temFiltro): ?>
+    <div class="kpi-banco">
+        <span><span class="tag">Banco completo:</span>
+            <strong><?= number_format($totalCandidatosBanco, 0, ',', '.') ?></strong> candidatos</span>
+        <span><strong><?= number_format($totalCargosBanco, 0, ',', '.') ?></strong> cargos</span>
+        <span><strong><?= number_format($totalCampanhasBanco, 0, ',', '.') ?></strong> campanhas</span>
+        <?php if ($temAno): ?>
+            <span><strong><?= number_format($totalAnosBanco, 0, ',', '.') ?></strong> anos</span>
+        <?php endif; ?>
+        <span><strong><?= number_format($totalGeralBanco, 0, ',', '.') ?></strong> votos</span>
+    </div>
+<?php endif; ?>
 
 <form method="get" action="candidatos_campanhas.php" id="form-filtros">
     <div class="filtros">
@@ -767,6 +1172,86 @@ $debugSessao = isset($_GET['debug_sessao']);
     </div>
 </form>
 
+<!-- ============================================================ -->
+<!-- VOTOS POR REGIÃO                                             -->
+<!-- ============================================================ -->
+<?php if ($porRegiao): ?>
+    <h2>Votos por Região <?= $temFiltro ? '(filtradas)' : '' ?></h2>
+
+    <div class="regioes-grid">
+        <?php
+        $posR = 1;
+        foreach ($porRegiao as $r):
+            $totalR   = (int)$r['total'];
+            $pctR     = $totalGeralFiltro > 0 ? ($totalR / $totalGeralFiltro) * 100 : 0;
+            $larguraR = $maxVotosRegiao > 0 ? ($totalR / $maxVotosRegiao) * 100 : 0;
+        ?>
+            <div class="regiao-card">
+                <div class="rg-nome">
+                    <span><?= htmlspecialchars($r['regiao']) ?></span>
+                    <span class="rg-pos">#<?= $posR++ ?></span>
+                </div>
+                <div class="rg-total">
+                    <?= number_format($totalR, 0, ',', '.') ?>
+                    <small>votos</small>
+                </div>
+                <div class="rg-sub">
+                    <?= number_format((int)$r['qtd_municipios'], 0, ',', '.') ?> município(s) ·
+                    <?= number_format((int)$r['qtd_zonas'], 0, ',', '.') ?> zona(s) ·
+                    <?= number_format((int)$r['qtd_candidatos'], 0, ',', '.') ?> candidato(s)
+                </div>
+                <div class="rg-barra">
+                    <span style="width: <?= number_format($larguraR, 2, '.', '') ?>%"></span>
+                </div>
+                <div class="rg-pct">
+                    <?= number_format($pctR, 2, ',', '.') ?>% do total
+                </div>
+            </div>
+        <?php endforeach; ?>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Região</th>
+                <th class="num">Municípios</th>
+                <th class="num">Zonas</th>
+                <th class="num">Candidatos</th>
+                <th class="num">Votos</th>
+                <th class="num">% do filtro</th>
+                <th>Proporção</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php $posR = 1; foreach ($porRegiao as $r):
+                $totalR   = (int)$r['total'];
+                $pctR     = $totalGeralFiltro > 0 ? ($totalR / $totalGeralFiltro) * 100 : 0;
+                $larguraR = $maxVotosRegiao > 0 ? ($totalR / $maxVotosRegiao) * 100 : 0;
+            ?>
+                <tr>
+                    <td><?= $posR++ ?></td>
+                    <td><span class="badge badge-regiao"><?= htmlspecialchars($r['regiao']) ?></span></td>
+                    <td class="num"><?= number_format((int)$r['qtd_municipios'], 0, ',', '.') ?></td>
+                    <td class="num"><?= number_format((int)$r['qtd_zonas'], 0, ',', '.') ?></td>
+                    <td class="num"><?= number_format((int)$r['qtd_candidatos'], 0, ',', '.') ?></td>
+                    <td class="num"><strong><?= number_format($totalR, 0, ',', '.') ?></strong></td>
+                    <td class="num"><?= number_format($pctR, 2, ',', '.') ?>%</td>
+                    <td><span class="barra barra-teal"><span style="width: <?= number_format($larguraR, 2, '.', '') ?>%"></span></span></td>
+                </tr>
+            <?php endforeach; ?>
+        </tbody>
+        <tfoot>
+            <tr>
+                <td colspan="5">Total</td>
+                <td class="num"><?= number_format($totalGeralFiltro, 0, ',', '.') ?></td>
+                <td class="num">100,00%</td>
+                <td></td>
+            </tr>
+        </tfoot>
+    </table>
+<?php endif; ?>
+
 <h2>Campanhas <?= $temFiltro ? '(filtradas)' : '' ?></h2>
 
 <?php if (!$campanhas): ?>
@@ -823,13 +1308,10 @@ $debugSessao = isset($_GET['debug_sessao']);
                     <td class="num"><?= number_format($c['qtd_zonas'], 0, ',', '.') ?></td>
                     <td class="num"><strong><?= number_format((int)$c['total'], 0, ',', '.') ?></strong></td>
                     <td class="num"><?= number_format($pct, 2, ',', '.') ?>%</td>
-                    <td>
-                        <span class="barra"><span style="width: <?= number_format($largura, 2, '.', '') ?>%"></span></span>
-                    </td>
+                    <td><span class="barra"><span style="width: <?= number_format($largura, 2, '.', '') ?>%"></span></span></td>
                     <?php if ($isAdmin): ?>
                         <td class="col-acoes">
-                            <button type="button"
-                                    class="btn-lixeira"
+                            <button type="button" class="btn-lixeira"
                                     title="Apagar todos os registros deste candidato/cargo/ano"
                                     data-candidato="<?= htmlspecialchars($c['candidato']) ?>"
                                     data-cargo="<?= htmlspecialchars($c['cargo']) ?>"
@@ -945,7 +1427,144 @@ $debugSessao = isset($_GET['debug_sessao']);
     </div>
 </div>
 
-<!-- MODAL — confirmação pelo NÚMERO (sem backup) -->
+<!-- ============================================================ -->
+<!-- VOTAÇÃO POR MUNICÍPIO (DataTable)                            -->
+<!-- ============================================================ -->
+<h2>Votação por Município <?= $temFiltro ? '(filtrada)' : '' ?></h2>
+
+<div class="dt-wrapper">
+    <div class="dt-header">
+        <h3>
+            🏙️ Todos os municípios
+            <span class="dt-badge"><?= count($municipiosDetalhado) ?> municípios</span>
+        </h3>
+        <div class="dt-total">
+            Ordenado por <b>total de votos</b> (maior → menor)
+        </div>
+    </div>
+
+    <!-- Filtros dedicados Zona / Seção -->
+    <div class="dt-filtros">
+        <div class="filtro-item">
+            <label for="filtroZona">🔷 Buscar zona:</label>
+            <input type="text" id="filtroZona" placeholder="#Z123" autocomplete="off">
+            <button type="button" class="filtro-clear" data-target="filtroZona" title="Limpar">×</button>
+        </div>
+
+        <?php if ($temSecao): ?>
+        <div class="filtro-item">
+            <label for="filtroSecao">🟢 Buscar seção:</label>
+            <input type="text" id="filtroSecao" placeholder="#S187" autocomplete="off">
+            <button type="button" class="filtro-clear" data-target="filtroSecao" title="Limpar">×</button>
+        </div>
+        <?php endif; ?>
+
+        <button type="button" id="btnLimparTodosFiltros" class="filtro-limpar-todos">
+            🧹 Limpar todos
+        </button>
+
+        <span class="filtro-info">
+            Digite o número (ex.: <code>123</code>) ou com prefixo (ex.: <code>#Z123</code>).
+            A busca global também aceita <code>#Z123</code> / <code>#S187</code>.
+        </span>
+    </div>
+
+    <table id="tabela-municipios" class="display" style="width:100%">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Município</th>
+                <th>Região</th>
+                <th class="num">Votos</th>
+                <th class="num">% do filtro</th>
+                <th class="num">Zonas</th>
+                <th>Zonas (#Z)</th>
+                <?php if ($temSecao): ?>
+                    <th class="num">Seções</th>
+                    <th>Seções (#S)</th>
+                <?php endif; ?>
+                <th class="num">Candidatos</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php
+            $posM = 1;
+            foreach ($municipiosDetalhado as $m):
+                $totalM = (int)$m['total'];
+                $pctM   = $totalGeralFiltro > 0 ? ($totalM / $totalGeralFiltro) * 100 : 0;
+                $qtdZ   = (int)($m['qtd_zonas']      ?? 0);
+                $qtdS   = (int)($m['qtd_secoes']     ?? 0);
+                $qtdC   = (int)($m['qtd_candidatos'] ?? 0);
+
+                // Chips visuais (com espaço entre eles)
+                $tagsZ = renderTags($m['zonas_lista']  ?? '', '#Z', 'tag-zona');
+                $tagsS = $temSecao
+                       ? renderTags($m['secoes_lista'] ?? '', '#S', 'tag-secao')
+                       : '';
+
+                // Texto puro pesquisável — vai no data-search do <td>
+                $searchZ = tagsSearchText($m['zonas_lista']  ?? '', '#Z');
+                $searchS = $temSecao
+                         ? tagsSearchText($m['secoes_lista'] ?? '', '#S')
+                         : '';
+            ?>
+                <tr>
+                    <td class="pos"><?= $posM++ ?></td>
+
+                    <td data-search="<?= htmlspecialchars($m['nomeMunicipio']) ?>">
+                        <strong><?= htmlspecialchars($m['nomeMunicipio']) ?></strong>
+                    </td>
+
+                    <td data-search="<?= htmlspecialchars($m['regiao']) ?>">
+                        <span class="badge badge-regiao"><?= htmlspecialchars($m['regiao']) ?></span>
+                    </td>
+
+                    <td class="num" data-order="<?= $totalM ?>">
+                        <strong><?= number_format($totalM, 0, ',', '.') ?></strong>
+                    </td>
+
+                    <td class="num" data-order="<?= $pctM ?>">
+                        <?= number_format($pctM, 2, ',', '.') ?>%
+                    </td>
+
+                    <td class="num" data-order="<?= $qtdZ ?>"><?= $qtdZ ?></td>
+
+                    <!-- Zonas (#Z) — data-search no <td> -->
+                    <td data-search="<?= htmlspecialchars($searchZ) ?>">
+                        <div class="tags-cell"><?= $tagsZ ?></div>
+                    </td>
+
+                    <?php if ($temSecao): ?>
+                        <td class="num" data-order="<?= $qtdS ?>"><?= $qtdS ?></td>
+
+                        <!-- Seções (#S) — data-search no <td> -->
+                        <td data-search="<?= htmlspecialchars($searchS) ?>">
+                            <div class="tags-cell"><?= $tagsS ?: '<span style="color:#bbb;">—</span>' ?></div>
+                        </td>
+                    <?php endif; ?>
+
+                    <td class="num" data-order="<?= $qtdC ?>"><?= $qtdC ?></td>
+                </tr>
+            <?php endforeach; ?>
+        </tbody>
+        <tfoot>
+            <tr>
+                <th colspan="3" style="text-align:right;">Total</th>
+                <th class="num"><?= number_format($totalGeralFiltro, 0, ',', '.') ?></th>
+                <th class="num">100,00%</th>
+                <th class="num"><?= number_format($totalZonas, 0, ',', '.') ?></th>
+                <th></th>
+                <?php if ($temSecao): ?>
+                    <th></th>
+                    <th></th>
+                <?php endif; ?>
+                <th></th>
+            </tr>
+        </tfoot>
+    </table>
+</div>
+
+<!-- MODAL — confirmação pelo NÚMERO -->
 <?php if ($isAdmin): ?>
 <div id="modal-apagar" aria-hidden="true">
     <div class="caixa">
@@ -963,13 +1582,9 @@ $debugSessao = isset($_GET['debug_sessao']);
                 <label for="confirmaNumero">
                     Para confirmar, digite o <b>número do candidato</b> abaixo:
                 </label>
-                <input type="text"
-                       id="confirmaNumero"
-                       inputmode="numeric"
-                       pattern="[0-9]*"
-                       maxlength="6"
-                       autocomplete="off"
-                       spellcheck="false"
+                <input type="text" id="confirmaNumero"
+                       inputmode="numeric" pattern="[0-9]*"
+                       maxlength="6" autocomplete="off" spellcheck="false"
                        placeholder="ex.: 13">
             </div>
 
@@ -996,6 +1611,7 @@ $debugSessao = isset($_GET['debug_sessao']);
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/i18n/pt-BR.js"></script>
+<script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
 
 <script>
     // ============================================================
@@ -1031,11 +1647,82 @@ $debugSessao = isset($_GET['debug_sessao']);
     })();
 
     // ============================================================
+    // DataTable — Votação por Município + filtros Zona / Seção
+    // ============================================================
+    (function () {
+        if (typeof jQuery === 'undefined' || typeof jQuery.fn.DataTable === 'undefined') return;
+
+        const dt = jQuery('#tabela-municipios').DataTable({
+            language: {
+                url: 'https://cdn.datatables.net/plug-ins/1.13.7/i18n/pt-BR.json'
+            },
+            order: [[3, 'desc']],   // Votos DESC
+            pageLength: 25,
+            lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, 'Todos']],
+            autoWidth: false,
+            stateSave: false,
+            columnDefs: [
+                { targets: 0, orderable: false, searchable: false }
+            ]
+        });
+
+        // Índices: 0=#, 1=Município, 2=Região, 3=Votos, 4=%, 5=QtdZonas,
+        //          6=Zonas(#Z), 7=QtdSeções, 8=Seções(#S), 9=Candidatos
+        const COL_ZONA  = 6;
+        const COL_SECAO = <?= $temSecao ? 8 : -1 ?>;
+
+        // ---- Filtro Zona ----
+        jQuery('#filtroZona').on('keyup change input', function () {
+            const v = this.value.trim();
+            if (v === '') { dt.column(COL_ZONA).search('').draw(); return; }
+            const num = v.replace(/^#Z/i, '').trim();
+            if (num === '') { dt.column(COL_ZONA).search('').draw(); return; }
+            dt.column(COL_ZONA).search('#Z' + num, false, false).draw();
+        });
+
+        // ---- Filtro Seção ----
+        if (COL_SECAO >= 0) {
+            jQuery('#filtroSecao').on('keyup change input', function () {
+                const v = this.value.trim();
+                if (v === '') { dt.column(COL_SECAO).search('').draw(); return; }
+                const num = v.replace(/^#S/i, '').trim();
+                if (num === '') { dt.column(COL_SECAO).search('').draw(); return; }
+                dt.column(COL_SECAO).search('#S' + num, false, false).draw();
+            });
+        }
+
+        // ---- Botões "×" ----
+        jQuery('.filtro-clear').on('click', function () {
+            const id = jQuery(this).data('target');
+            jQuery('#' + id).val('').trigger('keyup');
+            jQuery('#' + id).focus();
+        });
+
+        // ---- Botão "Limpar todos" ----
+        jQuery('#btnLimparTodosFiltros').on('click', function () {
+            dt.search('');
+            dt.columns().search('');
+            jQuery('#filtroZona, #filtroSecao').val('');
+            dt.draw();
+        });
+
+        // ---- Log de diagnóstico (só quando ?debug_secao=1) ----
+        <?php if ($debugSecao): ?>
+        console.log('=== DEBUG SEÇÃO ===');
+        console.log('COL_SECAO =', COL_SECAO);
+        console.log('Coluna detectada =', '<?= htmlspecialchars($colSecao) ?>');
+        console.log('Amostra secoes_lista:');
+        <?php foreach (array_slice($municipiosDetalhado, 0, 5) as $m): ?>
+        console.log('  <?= addslashes($m['nomeMunicipio']) ?>:', '<?= addslashes((string)($m['secoes_lista'] ?? '')) ?>');
+        <?php endforeach; ?>
+        <?php endif; ?>
+    })();
+
+    // ============================================================
     // Detalhe sob demanda (lazy loading)
     // ============================================================
     (function () {
         const CACHE = {};
-
         function escapeHtml(s) {
             return String(s).replace(/[&<>"']/g, c => ({
                 '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
@@ -1046,8 +1733,7 @@ $debugSessao = isset($_GET['debug_sessao']);
         function renderDetalhe(dados) {
             let regioesHtml = '';
             (dados.por_regiao || []).forEach(function (r) {
-                regioesHtml +=
-                    '<tr><td>' + escapeHtml(r.regiao) + '</td>' +
+                regioesHtml += '<tr><td>' + escapeHtml(r.regiao) + '</td>' +
                     '<td class="num">' + fmtNum(r.total) + '</td></tr>';
             });
             if (!regioesHtml) {
@@ -1056,8 +1742,7 @@ $debugSessao = isset($_GET['debug_sessao']);
 
             let munHtml = '';
             (dados.por_municipio || []).forEach(function (m) {
-                munHtml +=
-                    '<tr><td>' + escapeHtml(m.nomeMunicipio) + '</td>' +
+                munHtml += '<tr><td>' + escapeHtml(m.nomeMunicipio) + '</td>' +
                     '<td>' + escapeHtml(m.regiao) + '</td>' +
                     '<td class="num">' + fmtNum(m.total) + '</td></tr>';
             });
@@ -1083,36 +1768,25 @@ $debugSessao = isset($_GET['debug_sessao']);
 
             tr.addEventListener('click', function (e) {
                 if (e.target.closest('a, button, input, select')) return;
-
                 const detalhe = tr.nextElementSibling;
                 if (!detalhe || !detalhe.classList.contains('linha-detalhe')) return;
 
                 const visivel = detalhe.style.display !== 'none';
-                if (visivel) {
-                    detalhe.style.display = 'none';
-                    return;
-                }
+                if (visivel) { detalhe.style.display = 'none'; return; }
 
                 detalhe.style.display = 'table-row';
                 const celula = detalhe.querySelector('td[colspan]');
                 const chave  = tr.dataset.chave || '';
 
-                // Cache
-                if (CACHE[chave]) {
-                    celula.innerHTML = CACHE[chave];
-                    return;
-                }
+                if (CACHE[chave]) { celula.innerHTML = CACHE[chave]; return; }
 
-                // Carrega via AJAX
                 celula.innerHTML =
-                    '<div class="detalhe-loading">' +
-                    '<span class="spinner"></span>Carregando detalhes…' +
-                    '</div>';
+                    '<div class="detalhe-loading"><span class="spinner"></span>Carregando detalhes…</div>';
 
                 const qs = new URLSearchParams({
-                    ajax:  'detalhe',
-                    cand:  tr.dataset.candidato || '',
-                    cargo: tr.dataset.cargo     || '',
+                    ajax: 'detalhe',
+                    cand: tr.dataset.candidato || '',
+                    cargo: tr.dataset.cargo || '',
                 });
                 if (tr.dataset.ano) qs.append('ano', tr.dataset.ano);
 
@@ -1121,9 +1795,8 @@ $debugSessao = isset($_GET['debug_sessao']);
                     .then(j => {
                         if (!j.ok) {
                             celula.innerHTML =
-                                '<div style="padding:20px;color:#b94a48;">' +
-                                'Erro: ' + escapeHtml(j.msg || 'desconhecido') +
-                                '</div>';
+                                '<div style="padding:20px;color:#b94a48;">Erro: ' +
+                                escapeHtml(j.msg || 'desconhecido') + '</div>';
                             return;
                         }
                         const html = renderDetalhe(j);
@@ -1143,16 +1816,16 @@ $debugSessao = isset($_GET['debug_sessao']);
     // ============================================================
     <?php if ($isAdmin): ?>
     (function () {
-        const modal        = document.getElementById('modal-apagar');
-        const elDet        = document.getElementById('modalDetalhe');
-        const inputConf    = document.getElementById('confirmaNumero');
-        const avisoNumero  = document.getElementById('avisoNumero');
-        const btnApagar    = document.getElementById('btnApagar');
-        const btnCancelar  = document.getElementById('btnCancelar');
-        const formApagar   = document.getElementById('formApagar');
-        const fDelCand     = document.getElementById('fDelCandidato');
-        const fDelCargo    = document.getElementById('fDelCargo');
-        const fDelAno      = document.getElementById('fDelAno');
+        const modal       = document.getElementById('modal-apagar');
+        const elDet       = document.getElementById('modalDetalhe');
+        const inputConf   = document.getElementById('confirmaNumero');
+        const avisoNumero = document.getElementById('avisoNumero');
+        const btnApagar   = document.getElementById('btnApagar');
+        const btnCancelar = document.getElementById('btnCancelar');
+        const formApagar  = document.getElementById('formApagar');
+        const fDelCand    = document.getElementById('fDelCandidato');
+        const fDelCargo   = document.getElementById('fDelCargo');
+        const fDelAno     = document.getElementById('fDelAno');
 
         let alvoAtual = null;
         const fmtNum = n => Number(n).toLocaleString('pt-BR');
@@ -1162,7 +1835,6 @@ $debugSessao = isset($_GET['debug_sessao']);
 
         function abrirModal(dados) {
             alvoAtual = dados;
-
             const temNum    = (dados.numero && String(dados.numero).trim() !== '');
             const numeroRef = temNum ? String(dados.numero) : '0';
 
@@ -1171,11 +1843,9 @@ $debugSessao = isset($_GET['debug_sessao']);
                 '<b>Cargo:</b> ' + escHtml(dados.cargo) + '<br>' +
                 (dados.ano ? '<b>Ano:</b> ' + dados.ano + '<br>' : '') +
                 '<b>Número:</b> ' +
-                  (temNum
-                    ? '<span class="destaque-numero">' + escHtml(numeroRef) + '</span>'
-                    : '<span style="color:#b94a48;font-weight:bold;">(sem número cadastrado)</span>'
-                  ) + '<br>' +
-                '<b>Votos que serão apagados:</b> ' + fmtNum(dados.total);
+                  (temNum ? '<span class="destaque-numero">' + escHtml(numeroRef) + '</span>'
+                          : '<span style="color:#b94a48;font-weight:bold;">(sem número cadastrado)</span>') +
+                '<br><b>Votos que serão apagados:</b> ' + fmtNum(dados.total);
 
             inputConf.value = '';
             inputConf.dataset.numeroRef = numeroRef;
@@ -1185,8 +1855,7 @@ $debugSessao = isset($_GET['debug_sessao']);
             if (temNum) {
                 avisoNumero.textContent = '⚠ O botão só será habilitado quando o número estiver correto.';
             } else {
-                avisoNumero.innerHTML =
-                    '⚠ Este candidato não tem número cadastrado. Digite <b>0</b> para liberar o botão.';
+                avisoNumero.innerHTML = '⚠ Este candidato não tem número. Digite <b>0</b>.';
             }
 
             modal.classList.add('ativo');
@@ -1237,7 +1906,6 @@ $debugSessao = isset($_GET['debug_sessao']);
                     numero:    btn.dataset.numero,
                     total:     parseInt(btn.dataset.total, 10) || 0,
                 };
-
                 const numExib = dados.numero ? dados.numero : '(sem número)';
                 const msg1 =
                     'Deseja apagar TODOS os registros do candidato:\n\n' +

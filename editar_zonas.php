@@ -1,8 +1,10 @@
 <?php
 // ------------------------------------------------------------
 // Configuração do banco
+// editar_zonas.php
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
+require_once __DIR__ . '/auth.php';
 
 $pdo = new PDO(
     "mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4",
@@ -14,6 +16,34 @@ $pdo = new PDO(
     ]
 );
 
+// ============================================================
+// USUÁRIO LOGADO
+// ============================================================
+$__u = usuarioLogado();
+
+$__loginLower = mb_strtolower(trim((string)($__u['login'] ?? '')), 'UTF-8');
+$__nomeLower  = mb_strtolower(trim((string)($__u['nome']  ?? '')), 'UTF-8');
+$__perfil     = $__u['perfil'] ?? 'consulta';
+
+$__loginsDono = ['barreto', 'vbarreto'];
+$__nomesDono  = ['barreto', 'valter barreto'];
+
+$__ehDono = in_array($__loginLower, $__loginsDono, true)
+         || in_array($__nomeLower,  $__nomesDono,  true);
+
+$__ehSuper      = ($__perfil === 'superadmin');
+$__ehAdminNivel = ($__perfil === 'admin');
+$__ehAdmin      = ($__ehSuper || $__ehAdminNivel);
+
+$isAdmin = ($__ehAdmin && $__ehDono);
+
+$__rotuloPerfil = function_exists('rotuloPerfil')
+                    ? rotuloPerfil($__perfil)
+                    : strtoupper($__perfil);
+$__classePerfil = function_exists('classePerfil')
+                    ? classePerfil($__perfil)
+                    : ('perfil-' . $__perfil);
+
 // ------------------------------------------------------------
 // Endpoint AJAX (salvar / geocodificar)
 // ------------------------------------------------------------
@@ -21,6 +51,11 @@ if (($_GET['ajax'] ?? '') !== '') {
     header('Content-Type: application/json; charset=utf-8');
 
     try {
+        // Só admin pode gravar/geocodificar
+        if (!$__ehAdmin) {
+            throw new Exception('Sem permissão para executar esta ação.');
+        }
+
         $acao = $_GET['ajax'];
 
         if ($acao === 'salvar') {
@@ -264,11 +299,76 @@ if ($zonas) {
     #mapa { height: 320px; width: 100%; border-radius:6px; }
     #painel-mapa .info { font-size:12px; color:#555; margin-top:6px; line-height:1.4; }
     #painel-mapa .coords { font-family: monospace; font-size:12px; color:#333; }
+
+    /* ============================================================
+       CARD DO USUÁRIO LOGADO
+       ============================================================ */
+    .barra-usuario {
+        background:#fff; padding:10px 16px; border-radius:6px;
+        box-shadow:0 1px 3px rgba(0,0,0,.08);
+        display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+        font-size:13.5px; margin-bottom:18px;
+        border-left:5px solid #6c757d;
+    }
+    .barra-usuario.admin { border-left-color:#ffc107; }
+    .barra-usuario.super { border-left-color:#dc3545; }
+    .barra-usuario .nome-user { font-weight:bold; color:#333; }
+    .barra-usuario .saudacao { color:#888; font-weight:normal; margin-right:3px; }
+
+    .perfil-tag {
+        font-size:10px; padding:2px 8px; border-radius:8px;
+        font-weight:bold; letter-spacing:.5px;
+        background:#e6f0fa; color:#0069d9;
+    }
+    .perfil-tag.perfil-super    { background:#dc3545; color:#fff; }
+    .perfil-tag.perfil-admin    { background:#fff3cd; color:#856404; }
+    .perfil-tag.perfil-consulta { background:#e6f0fa; color:#0069d9; }
+
+    .badge-admin {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#fff3cd; color:#856404;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
+    .badge-super {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#dc3545; color:#fff;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
+    .badge-visitante {
+        display:inline-flex; align-items:center; gap:5px;
+        background:#e9ecef; color:#495057;
+        padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px;
+    }
 </style>
 </head>
 <body>
 
 <a href="zonas.php" class="link-voltar">&larr; Voltar para zonas</a>
+
+<!-- ============================================================
+     CARD DO USUÁRIO LOGADO
+     ============================================================ -->
+<div class="barra-usuario <?= $isAdmin ? ($__ehSuper ? 'super' : 'admin') : '' ?>">
+    <span>
+        👤 <span class="saudacao">Olá,</span>
+        <span class="nome-user"><?= htmlspecialchars($__u['nome'] ?? '—') ?></span>
+    </span>
+    <span class="perfil-tag <?= htmlspecialchars($__classePerfil) ?>">
+        <?= htmlspecialchars($__rotuloPerfil) ?>
+    </span>
+    <?php if ($isAdmin): ?>
+        <span class="<?= $__ehSuper ? 'badge-super' : 'badge-admin' ?>">
+            <?= $__ehSuper ? '🔓 superadmin' : '🔓 administrador' ?>
+        </span>
+    <?php elseif ($__ehAdmin && !$__ehDono): ?>
+        <span class="badge-visitante">👁️ admin (somente leitura)</span>
+    <?php else: ?>
+        <span class="badge-visitante">👁️ visitante (somente leitura)</span>
+    <?php endif; ?>
+</div>
 
 <h1>Editar Zonas Eleitorais</h1>
 
@@ -330,11 +430,18 @@ if ($zonas) {
         </div>
     </div>
 
-    <div class="aviso" style="background:#e7f3ff;border-left-color:#0069d9;">
-        Edite os campos e clique em <strong>Salvar</strong>.
-        Use <strong>Geocodificar</strong> para buscar as coordenadas no OpenStreetMap,
-        ou <strong>Mapa</strong> para ajustar o ponto arrastando o marcador.
-    </div>
+    <?php if ($__ehAdmin): ?>
+        <div class="aviso" style="background:#e7f3ff;border-left-color:#0069d9;">
+            Edite os campos e clique em <strong>Salvar</strong>.
+            Use <strong>Geocodificar</strong> para buscar as coordenadas no OpenStreetMap,
+            ou <strong>Mapa</strong> para ajustar o ponto arrastando o marcador.
+        </div>
+    <?php else: ?>
+        <div class="aviso">
+            Você está no modo <strong>somente leitura</strong> — os campos abaixo
+            estão desabilitados para edição.
+        </div>
+    <?php endif; ?>
 
     <table>
         <thead>
@@ -358,39 +465,48 @@ if ($zonas) {
                         <input type="text"
                                name="endereco_tse"
                                value="<?= htmlspecialchars($z['endereco_tse'] ?? '') ?>"
-                               placeholder="Ex.: Rua X, 123">
+                               placeholder="Ex.: Rua X, 123"
+                               <?= $__ehAdmin ? '' : 'readonly' ?>>
                     </td>
                     <td>
                         <input type="text"
                                name="bairro"
-                               value="<?= htmlspecialchars($z['bairro'] ?? '') ?>">
+                               value="<?= htmlspecialchars($z['bairro'] ?? '') ?>"
+                               <?= $__ehAdmin ? '' : 'readonly' ?>>
                     </td>
                     <td>
                         <input type="text"
                                name="cep"
-                               value="<?= htmlspecialchars($z['cep'] ?? '') ?>">
+                               value="<?= htmlspecialchars($z['cep'] ?? '') ?>"
+                               <?= $__ehAdmin ? '' : 'readonly' ?>>
                     </td>
                     <td class="coord">
                         <input type="text"
                                name="latitude"
                                value="<?= $z['latitude'] !== null ? htmlspecialchars(number_format((float)$z['latitude'], 6, '.', '')) : '' ?>"
-                               placeholder="-7.123456">
+                               placeholder="-7.123456"
+                               <?= $__ehAdmin ? '' : 'readonly' ?>>
                     </td>
                     <td class="coord">
                         <input type="text"
                                name="longitude"
                                value="<?= $z['longitude'] !== null ? htmlspecialchars(number_format((float)$z['longitude'], 6, '.', '')) : '' ?>"
-                               placeholder="-40.123456">
+                               placeholder="-40.123456"
+                               <?= $__ehAdmin ? '' : 'readonly' ?>>
                     </td>
                     <td>
-                        <div class="acoes">
-                            <button type="button" class="btn-salvar">Salvar</button>
-                            <button type="button" class="btn-geo">Geocodificar</button>
-                            <button type="button" class="btn-mapa"
-                                    data-municipio="<?= htmlspecialchars($municipio) ?>"
-                                    data-uf="<?= htmlspecialchars($ufPadrao) ?>">Mapa</button>
-                        </div>
-                        <div class="status"></div>
+                        <?php if ($__ehAdmin): ?>
+                            <div class="acoes">
+                                <button type="button" class="btn-salvar">Salvar</button>
+                                <button type="button" class="btn-geo">Geocodificar</button>
+                                <button type="button" class="btn-mapa"
+                                        data-municipio="<?= htmlspecialchars($municipio) ?>"
+                                        data-uf="<?= htmlspecialchars($ufPadrao) ?>">Mapa</button>
+                            </div>
+                            <div class="status"></div>
+                        <?php else: ?>
+                            <span style="color:#999;font-style:italic;font-size:12px;">—</span>
+                        <?php endif; ?>
                     </td>
                 </tr>
             <?php endforeach; ?>
@@ -399,6 +515,7 @@ if ($zonas) {
 
 <?php endif; ?>
 
+<?php if ($__ehAdmin): ?>
 <!-- Painel do mapa (oculto até clicar em "Mapa") -->
 <div id="painel-mapa">
     <button class="fechar" title="Fechar">&times;</button>
@@ -410,7 +527,9 @@ if ($zonas) {
         <br><button type="button" class="btn-salvar" id="pm-salvar" style="margin-top:6px;">Salvar do mapa</button>
     </div>
 </div>
+<?php endif; ?>
 
+<?php if ($__ehAdmin): ?>
 <script>
 (function () {
     // ------------------------------------------------------------
@@ -418,6 +537,7 @@ if ($zonas) {
     // ------------------------------------------------------------
     function setStatus(tr, msg, tipo) {
         const el = tr.querySelector('.status');
+        if (!el) return;
         el.textContent = msg;
         el.className = 'status ' + (tipo || '');
     }
@@ -449,7 +569,7 @@ if ($zonas) {
         }
         setTimeout(() => {
             const el = tr.querySelector('.status');
-            if (el.classList.contains('ok')) el.textContent = '';
+            if (el && el.classList.contains('ok')) el.textContent = '';
         }, 2500);
     }
 
@@ -483,7 +603,7 @@ if ($zonas) {
         }
         setTimeout(() => {
             const el = tr.querySelector('.status');
-            if (el.classList.contains('ok')) el.textContent = '';
+            if (el && el.classList.contains('ok')) el.textContent = '';
         }, 3000);
     }
 
@@ -577,6 +697,7 @@ if ($zonas) {
     });
 })();
 </script>
+<?php endif; ?>
 
 </body>
 </html>
