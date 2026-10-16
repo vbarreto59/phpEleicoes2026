@@ -6,6 +6,7 @@
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
 require_once __DIR__ . '/auth.php';
+date_default_timezone_set('America/Sao_Paulo');
 
 // ------------------------------------------------------------
 // Proteção: só admin / superadmin

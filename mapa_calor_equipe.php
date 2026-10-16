@@ -1,9 +1,10 @@
 <?php
 // ------------------------------------------------------------
-// Configuração do banco + autenticação
+// mapa_calor_equipe.php
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
 require_once __DIR__ . '/auth.php';
+date_default_timezone_set('America/Sao_Paulo');
 
 // ============================================================
 // USUÁRIO LOGADO
@@ -73,13 +74,31 @@ if ($COL_VOTOS === null) {
 }
 if ($COL_VOTOS === null) die("Coluna de votos não detectada.");
 
+$temTipoVotavel   = in_array('cdTipoVotavel',  $colunasVotos, true);
+$temCargoPergunta = in_array('cargoPergunta', $colunasVotos, true);
+
 $colunasCoord = [];
 foreach ($pdo->query("SHOW COLUMNS FROM coordenadores") as $c) $colunasCoord[] = $c['Field'];
-$temCandidatoCoord = in_array('nomeCandidatoResp', $colunasCoord, true);
+$temNumeroCandCoord = in_array('numero_candidato', $colunasCoord, true);
+$temAnoCampanha     = in_array('ano_campanha',     $colunasCoord, true);
 
 $temLiderSecao = false;
-try { $pdo->query("SELECT 1 FROM lider_secao LIMIT 1"); $temLiderSecao = true; }
-catch (Exception $e) { $temLiderSecao = false; }
+$temCoordSecao = false;
+try { $pdo->query("SELECT 1 FROM lider_secao LIMIT 1");       $temLiderSecao = true; } catch (Exception $e) {}
+try { $pdo->query("SELECT 1 FROM coordenador_secao LIMIT 1"); $temCoordSecao = true; } catch (Exception $e) {}
+
+// Valida colunas mínimas de coordenador_secao
+if ($temCoordSecao) {
+    try {
+        $colsCS = [];
+        foreach ($pdo->query("SHOW COLUMNS FROM coordenador_secao") as $c) $colsCS[] = $c['Field'];
+        if (!in_array('coordenador_id', $colsCS, true) ||
+            !in_array('numeroZona',     $colsCS, true) ||
+            !in_array('numeroSecao',    $colsCS, true)) {
+            $temCoordSecao = false;
+        }
+    } catch (Exception $e) { $temCoordSecao = false; }
+}
 
 // ============================================================
 // AJAX
@@ -99,24 +118,18 @@ if (isset($_GET['ajax'])) {
             exit;
         }
 
-        if ($_GET['ajax'] === 'coordenadores_candidato') {
-            $cand = trim($_GET['candidato'] ?? '');
-            if (!$temCandidatoCoord) {
-                $stmt = $pdo->query(
-                    "SELECT id, nome, ativo FROM coordenadores ORDER BY ativo DESC, nome"
-                );
-            } elseif ($cand !== '') {
-                $stmt = $pdo->prepare(
-                    "SELECT id, nome, ativo FROM coordenadores
-                      WHERE nomeCandidatoResp = :c
-                      ORDER BY ativo DESC, nome"
-                );
-                $stmt->execute([':c' => $cand]);
-            } else {
-                $stmt = $pdo->query(
-                    "SELECT id, nome, ativo FROM coordenadores ORDER BY ativo DESC, nome"
-                );
-            }
+        if ($_GET['ajax'] === 'coordenadores_listar') {
+            $ano = (int)($_GET['ano'] ?? 0);
+            $num = (int)($_GET['candidato'] ?? 0);
+
+            $sql  = "SELECT c.id, c.nome, c.ativo, c.numero_candidato, c.ano_campanha
+                       FROM coordenadores c WHERE 1=1";
+            $pars = [];
+            if ($ano > 0 && $temAnoCampanha)     { $sql .= " AND c.ano_campanha = :ano";     $pars[':ano'] = $ano; }
+            if ($num > 0 && $temNumeroCandCoord) { $sql .= " AND c.numero_candidato = :num"; $pars[':num'] = $num; }
+            $sql .= " ORDER BY c.ativo DESC, c.nome";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($pars);
             echo json_encode($stmt->fetchAll());
             exit;
         }
@@ -132,9 +145,10 @@ if (isset($_GET['ajax'])) {
 // ============================================================
 // FILTROS
 // ============================================================
+$ano         = (int)($_GET['ano']       ?? 0);
+$candidato   = (int)($_GET['candidato'] ?? 0);
 $coordId     = (int)($_GET['coordenador_id'] ?? 0);
 $liderId     = (int)($_GET['lider_id']       ?? 0);
-$candidato   = trim($_GET['candidato']       ?? '');
 $cargo       = trim($_GET['cargo']           ?? '');
 $raio        = isset($_GET['raio']) ? (int)$_GET['raio']    : 24;
 $opacidade   = isset($_GET['opac']) ? (float)$_GET['opac']  : 0.7;
@@ -144,84 +158,63 @@ if ($raio > 80) $raio = 80;
 if ($opacidade < 0.1) $opacidade = 0.1;
 if ($opacidade > 1)   $opacidade = 1;
 
-// Mapa só aparece com filtro de equipe ativo
-$mostrarMapa = ($candidato !== '' || $coordId > 0 || $liderId > 0);
-$temFiltro   = $mostrarMapa || $cargo !== '';
+$mostrarMapa = ($ano > 0 && $candidato > 0);
+$temFiltro   = ($ano > 0 || $candidato > 0 || $coordId > 0 || $liderId > 0 || $cargo !== '');
 
 // ============================================================
-// VOTOS POR (ZONA, SEÇÃO)
+// LISTAS PARA OS SELECTS
 // ============================================================
-$votosPorSecao = [];
+$listaAnos = $pdo->query(
+    "SELECT DISTINCT ano FROM votos WHERE ano > 0 ORDER BY ano DESC"
+)->fetchAll(PDO::FETCH_COLUMN);
 
-if ($candidato !== '' || $cargo !== '') {
-    $filtrosVotos = [];
-    $paramsVotos  = [];
-    if ($candidato !== '') {
-        $filtrosVotos[] = "nomeCandidatoResp = :cand";
-        $paramsVotos[':cand'] = $candidato;
-    }
-    if ($cargo !== '') {
-        $filtrosVotos[] = "nomeCargoPerg = :cargo";
-        $paramsVotos[':cargo'] = $cargo;
-    }
-    $whereVotos = 'WHERE ' . implode(' AND ', $filtrosVotos);
-
+$listaCandidatos = [];
+if ($ano > 0) {
     $stmt = $pdo->prepare(
-        "SELECT numeroZona, numeroSecao, SUM(qtdVotos) AS total
-         FROM votos
-         $whereVotos
-         GROUP BY numeroZona, numeroSecao"
+        "SELECT numero, MIN(nomeCandidatoResp) AS nome, MIN(nomeCargoPerg) AS cargo
+           FROM votos
+          WHERE ano = :ano AND numero > 0 AND nomeCandidatoResp <> ''
+          GROUP BY numero
+          ORDER BY nome"
     );
-    $stmt->execute($paramsVotos);
-    foreach ($stmt->fetchAll() as $r) {
-        $votosPorSecao[$r['numeroZona'] . '|' . $r['numeroSecao']] = (int)$r['total'];
-    }
+    $stmt->execute([':ano' => $ano]);
+    $listaCandidatos = $stmt->fetchAll();
 }
 
-// ============================================================
-// COORDENADORES
-// ============================================================
-$colCand = $temCandidatoCoord ? ", nomeCandidatoResp" : "";
-$whereCoords = [];
-$paramsCoords = [];
-if ($temCandidatoCoord && $candidato !== '') {
-    $whereCoords[] = "nomeCandidatoResp = :cand";
-    $paramsCoords[':cand'] = $candidato;
+$listaCargos = $pdo->query(
+    "SELECT DISTINCT nomeCargoPerg FROM votos
+      WHERE nomeCargoPerg IS NOT NULL AND nomeCargoPerg <> ''
+      ORDER BY nomeCargoPerg"
+)->fetchAll(PDO::FETCH_COLUMN);
+
+$coordenadores = [];
+if ($mostrarMapa) {
+    $sql  = "SELECT c.id, c.nome, c.ativo, c.numero_candidato, c.ano_campanha
+               FROM coordenadores c
+              WHERE 1=1";
+    $pars = [];
+    if ($temAnoCampanha)     { $sql .= " AND c.ano_campanha = :ano";     $pars[':ano'] = $ano; }
+    if ($temNumeroCandCoord) { $sql .= " AND c.numero_candidato = :num"; $pars[':num'] = $candidato; }
+    $sql .= " ORDER BY c.ativo DESC, c.nome";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($pars);
+    $coordenadores = $stmt->fetchAll();
 }
-$whereCoordsStr = $whereCoords ? 'WHERE ' . implode(' AND ', $whereCoords) : '';
-
-$stmt = $pdo->prepare(
-    "SELECT id, nome, ativo$colCand
-       FROM coordenadores
-       $whereCoordsStr
-       ORDER BY ativo DESC, nome"
-);
-$stmt->execute($paramsCoords);
-$coordenadores = $stmt->fetchAll();
-
 $coordenadoresPermitidos = [];
 foreach ($coordenadores as $c) $coordenadoresPermitidos[(int)$c['id']] = true;
 
-$coordCandidato = [];
-foreach ($coordenadores as $c) {
-    $coordCandidato[(int)$c['id']] = $c['nomeCandidatoResp'] ?? '';
-}
-
-// ============================================================
-// LIDERANÇAS (só das permitidas)
-// ============================================================
 $liderancasTodas = [];
 if ($coordenadoresPermitidos) {
+    $in = implode(',', array_map('intval', array_keys($coordenadoresPermitidos)));
     $stmt = $pdo->query(
         "SELECT id, coordenador_id, nome, ativo FROM liderancas
-         ORDER BY ativo DESC, nome"
+          WHERE coordenador_id IN ($in)
+          ORDER BY ativo DESC, nome"
     );
     foreach ($stmt->fetchAll() as $r) {
-        $cid = (int)$r['coordenador_id'];
-        if (!isset($coordenadoresPermitidos[$cid])) continue;
         $liderancasTodas[] = [
             'id'             => (int)$r['id'],
-            'coordenador_id' => $cid,
+            'coordenador_id' => (int)$r['coordenador_id'],
             'nome'           => $r['nome'],
             'ativo'          => (int)$r['ativo'],
         ];
@@ -229,60 +222,213 @@ if ($coordenadoresPermitidos) {
 }
 
 // ============================================================
-// SEÇÕES DAS LIDERANÇAS
+// FILTRO PADRONIZADO DE VOTOS DO CANDIDATO
+// ============================================================
+function filtroCandVotosMapa(string $aliasV, string $aliasC, string $colVotos, bool $temTipo, bool $temCargo): string {
+    $f  = " AND {$aliasV}.numero = {$aliasC}.numero_candidato ";
+    $f .= " AND {$aliasV}.ano    = {$aliasC}.ano_campanha ";
+    $f .= " AND {$aliasV}.nomeCandidatoResp <> '' ";
+    if ($temTipo)  $f .= " AND {$aliasV}.cdTipoVotavel = 1 ";
+    if ($temCargo) {
+        $f .= " AND {$aliasV}.cargoPergunta = (
+                    SELECT v2.cargoPergunta FROM votos v2
+                     WHERE v2.numero = {$aliasC}.numero_candidato
+                       AND v2.ano    = {$aliasC}.ano_campanha
+                       AND v2.nomeCandidatoResp <> ''
+                     GROUP BY v2.cargoPergunta
+                     ORDER BY SUM(v2.`$colVotos`) DESC
+                     LIMIT 1
+                 ) ";
+    }
+    return $f;
+}
+
+// ============================================================
+// VOTOS POR (ZONA, SEÇÃO)
+// ============================================================
+$votosPorSecao = [];
+if ($mostrarMapa) {
+    $condCargoExtra = '';
+    $paramsVotos = [':ano' => $ano, ':num' => $candidato];
+    if ($cargo !== '') {
+        $condCargoExtra = " AND v.nomeCargoPerg = :cargoExtra ";
+        $paramsVotos[':cargoExtra'] = $cargo;
+    }
+
+    $filtroCand = filtroCandVotosMapa('v', 'c', $COL_VOTOS, $temTipoVotavel, $temCargoPergunta);
+
+    $sql = "
+        SELECT v.numeroZona, v.numeroSecao, SUM(v.`$COL_VOTOS`) AS total
+          FROM votos v
+          INNER JOIN coordenadores c
+                  ON c.numero_candidato = :num
+                 AND c.ano_campanha     = :ano
+         WHERE 1=1
+           $filtroCand
+           $condCargoExtra
+         GROUP BY v.numeroZona, v.numeroSecao
+    ";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($paramsVotos);
+    foreach ($stmt->fetchAll() as $r) {
+        $votosPorSecao[$r['numeroZona'] . '|' . $r['numeroSecao']] = (int)$r['total'];
+    }
+}
+
+// ============================================================
+// SEÇÕES DA EQUIPE
+// Prioridade: LIDERANÇA > COORDENADOR DIRETO
 // ============================================================
 $linhasEquipe = [];
-if ($temLiderSecao && $coordenadoresPermitidos && $mostrarMapa) {
-    $sql = "
-        SELECT
-            ls.lider_id,
-            l.coordenador_id,
-            c.nome   AS coordenador_nome,
-            l.nome   AS lider_nome,
-            ls.numeroZona,
-            ls.numeroSecao,
-            s.nomeMunicipio,
-            s.nomeLocal,
-            s.latitude,
-            s.longitude
-        FROM lider_secao ls
-        INNER JOIN liderancas l   ON l.id = ls.lider_id
-        INNER JOIN coordenadores c ON c.id = l.coordenador_id
-        LEFT JOIN secoes_enderecos s
-               ON s.numeroZona  = ls.numeroZona
-              AND s.numeroSecao = ls.numeroSecao
-    ";
-    $filtrosEquipe = [];
-    $paramsEquipe  = [];
-    if ($coordId > 0) {
-        $filtrosEquipe[] = "l.coordenador_id = :cid";
-        $paramsEquipe[':cid'] = $coordId;
-    }
-    if ($liderId > 0) {
-        $filtrosEquipe[] = "ls.lider_id = :lid";
-        $paramsEquipe[':lid'] = $liderId;
-    }
-    if ($temCandidatoCoord && $candidato !== '') {
-        $filtrosEquipe[] = "c.nomeCandidatoResp = :ecand";
-        $paramsEquipe[':ecand'] = $candidato;
-    }
-    if ($filtrosEquipe) $sql .= ' WHERE ' . implode(' AND ', $filtrosEquipe);
-    $sql .= ' ORDER BY c.nome, l.nome, ls.numeroZona, ls.numeroSecao';
+if ($coordenadoresPermitidos && $mostrarMapa) {
 
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($paramsEquipe);
-    $linhasEquipe = $stmt->fetchAll();
+    // ---------- 1) SEÇÕES VIA LIDERANÇA ----------
+    $secoesLideranca = []; // coord_id => [zona|secao => row]
+    if ($temLiderSecao) {
+        $sql = "
+            SELECT
+                ls.lider_id,
+                l.coordenador_id,
+                c.nome        AS coordenador_nome,
+                c.numero_candidato,
+                c.ano_campanha,
+                l.nome        AS lider_nome,
+                ls.numeroZona,
+                ls.numeroSecao,
+                s.nomeMunicipio,
+                s.nomeLocal,
+                s.latitude,
+                s.longitude
+            FROM lider_secao ls
+            INNER JOIN liderancas l    ON l.id = ls.lider_id
+            INNER JOIN coordenadores c ON c.id = l.coordenador_id
+            LEFT JOIN secoes_enderecos s
+                   ON s.numeroZona  = ls.numeroZona
+                  AND s.numeroSecao = ls.numeroSecao
+        ";
+        $filtros = [];
+        $params  = [];
+        if ($coordId > 0) {
+            $filtros[] = "l.coordenador_id = :cid";
+            $params[':cid'] = $coordId;
+        }
+        if ($liderId > 0) {
+            $filtros[] = "ls.lider_id = :lid";
+            $params[':lid'] = $liderId;
+        }
+        if ($temNumeroCandCoord) {
+            $filtros[] = "c.numero_candidato = :num";
+            $params[':num'] = $candidato;
+        }
+        if ($temAnoCampanha) {
+            $filtros[] = "c.ano_campanha = :ano";
+            $params[':ano'] = $ano;
+        }
+        if ($filtros) $sql .= ' WHERE ' . implode(' AND ', $filtros);
+        $sql .= ' ORDER BY c.nome, l.nome, ls.numeroZona, ls.numeroSecao';
+
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            foreach ($stmt->fetchAll() as $r) {
+                $cid   = (int)$r['coordenador_id'];
+                $chave = $r['numeroZona'] . '|' . $r['numeroSecao'];
+                $r['tipo_secao'] = 'lideranca';
+                $secoesLideranca[$cid][$chave] = $r;
+            }
+        } catch (Exception $e) {
+            $secoesLideranca = [];
+        }
+    }
+
+    // ---------- 2) SEÇÕES DIRETAS DO COORDENADOR ----------
+    $secoesCoordDiretas = []; // coord_id => [zona|secao => row]
+    // Só carrega quando NÃO estamos filtrando por uma liderança específica
+    if ($temCoordSecao && $liderId === 0) {
+        $sql = "
+            SELECT
+                cs.coordenador_id,
+                c.nome        AS coordenador_nome,
+                c.numero_candidato,
+                c.ano_campanha,
+                cs.numeroZona,
+                cs.numeroSecao,
+                s.nomeMunicipio,
+                s.nomeLocal,
+                s.latitude,
+                s.longitude
+            FROM coordenador_secao cs
+            INNER JOIN coordenadores c ON c.id = cs.coordenador_id
+            LEFT JOIN secoes_enderecos s
+                   ON s.numeroZona  = cs.numeroZona
+                  AND s.numeroSecao = cs.numeroSecao
+        ";
+        $filtros = [];
+        $params  = [];
+        if ($coordId > 0) {
+            $filtros[] = "cs.coordenador_id = :cid";
+            $params[':cid'] = $coordId;
+        }
+        if ($temNumeroCandCoord) {
+            $filtros[] = "c.numero_candidato = :num";
+            $params[':num'] = $candidato;
+        }
+        if ($temAnoCampanha) {
+            $filtros[] = "c.ano_campanha = :ano";
+            $params[':ano'] = $ano;
+        }
+        if ($filtros) $sql .= ' WHERE ' . implode(' AND ', $filtros);
+        $sql .= ' ORDER BY c.nome, cs.numeroZona, cs.numeroSecao';
+
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            foreach ($stmt->fetchAll() as $r) {
+                $cid   = (int)$r['coordenador_id'];
+                $chave = $r['numeroZona'] . '|' . $r['numeroSecao'];
+                $r['tipo_secao'] = 'coordenador';
+                $r['lider_id']   = null;
+                $r['lider_nome'] = '';
+                $secoesCoordDiretas[$cid][$chave] = $r;
+            }
+        } catch (Exception $e) {
+            $secoesCoordDiretas = [];
+        }
+    }
+
+    // ---------- 3) MERGE COM PRIORIDADE À LIDERANÇA ----------
+    foreach ($secoesLideranca as $cid => $secoes) {
+        foreach ($secoes as $chave => $row) {
+            $linhasEquipe[] = $row;
+        }
+    }
+    foreach ($secoesCoordDiretas as $cid => $secoes) {
+        foreach ($secoes as $chave => $row) {
+            // Se a mesma seção já veio via liderança no mesmo coordenador, pula
+            if (isset($secoesLideranca[$cid][$chave])) continue;
+            $linhasEquipe[] = $row;
+        }
+    }
 }
 
 // ============================================================
 // GRUPOS + PONTOS POR ZONA
 // ============================================================
-$grupos          = [];
-$pontosPorZona   = [];
-$maxVotosGrupo   = 0;
-$secoesSemCoord  = 0;
-$totalVotosMapa  = 0;
-$totalSecoesMapa = 0;
+$grupos             = [];
+$pontosPorZona      = [];
+$maxVotosGrupo      = 0;
+$secoesSemCoord     = 0;
+$totalVotosMapa     = 0;
+$totalSecoesMapa    = 0;
+$totalSecoesCoord   = 0;
+$totalSecoesLider   = 0;
+
+$secoesJaContadas = []; // evita dupla contagem no total global
+
+$nomeCandidato = '';
+foreach ($listaCandidatos as $cc) {
+    if ((int)$cc['numero'] === $candidato) { $nomeCandidato = $cc['nome']; break; }
+}
 
 foreach ($linhasEquipe as $row) {
     $lat = (float)$row['latitude'];
@@ -295,7 +441,10 @@ foreach ($linhasEquipe as $row) {
     $votos = $votosPorSecao[$chave] ?? 0;
     $zona  = (int)$row['numeroZona'];
 
-    if ($liderId > 0 || $coordId > 0) {
+    $tipoSecao = $row['tipo_secao'] ?? 'lideranca';
+
+    // Agrupamento
+    if ($liderId > 0) {
         $grupoId   = 'L' . $row['lider_id'];
         $grupoNome = $row['lider_nome'];
         $grupoTipo = 'lideranca';
@@ -305,14 +454,12 @@ foreach ($linhasEquipe as $row) {
         $grupoTipo = 'coordenador';
     }
 
-    $candDoGrupo = $coordCandidato[(int)$row['coordenador_id']] ?? '';
-
     if (!isset($grupos[$grupoId])) {
         $grupos[$grupoId] = [
             'id'       => $grupoId,
             'nome'     => $grupoNome,
             'tipo'     => $grupoTipo,
-            'candidato'=> $candDoGrupo,
+            'candidato'=> $nomeCandidato,
             'pontos'   => [],
         ];
     }
@@ -326,8 +473,9 @@ foreach ($linhasEquipe as $row) {
         'municipio' => $row['nomeMunicipio'] ?? '',
         'local'     => $row['nomeLocal']     ?? '',
         'coord'     => $row['coordenador_nome'],
-        'lider'     => $row['lider_nome'],
-        'candidato' => $candDoGrupo,
+        'lider'     => $row['lider_nome']    ?? '',
+        'candidato' => $nomeCandidato,
+        'tipo'      => $tipoSecao,
     ];
     $grupos[$grupoId]['pontos'][] = $ponto;
 
@@ -338,15 +486,22 @@ foreach ($linhasEquipe as $row) {
     $pontosPorZona[$zona]['votos']    += $votos;
     $pontosPorZona[$zona]['secoes']++;
 
-    $totalVotosMapa  += $votos;
-    $totalSecoesMapa++;
+    if ($tipoSecao === 'coordenador') $totalSecoesCoord++;
+    else                              $totalSecoesLider++;
+
+    if (!isset($secoesJaContadas[$chave])) {
+        $secoesJaContadas[$chave] = true;
+        $totalVotosMapa  += $votos;
+        $totalSecoesMapa++;
+    }
+
     if ($votos > $maxVotosGrupo) $maxVotosGrupo = $votos;
 }
 
 $grupos = array_values(array_filter($grupos, fn($g) => count($g['pontos']) > 0));
 
 // ============================================================
-// ZONAS (polígono)
+// ZONAS (polígonos)
 // ============================================================
 $zonasParaPoligono = [];
 foreach ($pontosPorZona as $zonaNum => $info) {
@@ -359,37 +514,6 @@ foreach ($pontosPorZona as $zonaNum => $info) {
     ];
 }
 usort($zonasParaPoligono, fn($a, $b) => $a['zona'] <=> $b['zona']);
-
-// ============================================================
-// PALETAS
-// ============================================================
-$paletas = [
-    ['base' => '#e6194B', 'leve' => '#ffe0e6', 'medio' => '#ff8a9a', 'forte' => '#8a0022'],
-    ['base' => '#3cb44b', 'leve' => '#e0f7e3', 'medio' => '#8be096', 'forte' => '#1e6e2a'],
-    ['base' => '#4363d8', 'leve' => '#e0e7ff', 'medio' => '#8fa3f0', 'forte' => '#1a2f8a'],
-    ['base' => '#f58231', 'leve' => '#fff0e0', 'medio' => '#fcc088', 'forte' => '#a04a00'],
-    ['base' => '#911eb4', 'leve' => '#f2e0f7', 'medio' => '#c98cd9', 'forte' => '#4a0f5c'],
-    ['base' => '#42d4f4', 'leve' => '#e0faff', 'medio' => '#8ae5f7', 'forte' => '#0a7d94'],
-    ['base' => '#f032e6', 'leve' => '#ffe0fd', 'medio' => '#f78eef', 'forte' => '#8a0f7d'],
-    ['base' => '#bfef45', 'leve' => '#f5ffd9', 'medio' => '#dcf78a', 'forte' => '#5a7a00'],
-    ['base' => '#9A6324', 'leve' => '#f7ecdf', 'medio' => '#c5a075', 'forte' => '#4a2f10'],
-    ['base' => '#800000', 'leve' => '#f7dddd', 'medio' => '#c98888', 'forte' => '#3d0000'],
-    ['base' => '#000075', 'leve' => '#ddddff', 'medio' => '#8888bb', 'forte' => '#00004a'],
-    ['base' => '#00aaff', 'leve' => '#d9f2ff', 'medio' => '#88d4ff', 'forte' => '#005588'],
-];
-foreach ($grupos as $i => &$g) { $g['cor'] = $paletas[$i % count($paletas)]; }
-unset($g);
-
-// ============================================================
-// LISTAS PARA SELECTS
-// ============================================================
-$candidatos = $pdo->query(
-    "SELECT DISTINCT nomeCandidatoResp FROM votos ORDER BY nomeCandidatoResp"
-)->fetchAll(PDO::FETCH_COLUMN);
-
-$cargos = $pdo->query(
-    "SELECT DISTINCT nomeCargoPerg FROM votos ORDER BY nomeCargoPerg"
-)->fetchAll(PDO::FETCH_COLUMN);
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -413,9 +537,6 @@ $cargos = $pdo->query(
     h1 { color:#333; margin-bottom: 4px; }
     .subtitulo { color:#666; font-size:13px; margin-bottom:18px; }
 
-    /* ============================================================
-       CARD DO USUÁRIO LOGADO
-       ============================================================ */
     .barra-usuario {
         background:#fff; padding:10px 16px; border-radius:6px;
         box-shadow:0 1px 3px rgba(0,0,0,.08);
@@ -437,31 +558,20 @@ $cargos = $pdo->query(
     .perfil-tag.perfil-admin    { background:#fff3cd; color:#856404; }
     .perfil-tag.perfil-consulta { background:#e6f0fa; color:#0069d9; }
 
-    .badge-admin {
-        display:inline-flex; align-items:center; gap:5px;
-        background:#fff3cd; color:#856404;
-        padding:3px 10px; border-radius:12px;
-        font-size:11px; font-weight:bold; letter-spacing:.3px;
-    }
-    .badge-super {
-        display:inline-flex; align-items:center; gap:5px;
-        background:#dc3545; color:#fff;
-        padding:3px 10px; border-radius:12px;
-        font-size:11px; font-weight:bold; letter-spacing:.3px;
-    }
-    .badge-visitante {
-        display:inline-flex; align-items:center; gap:5px;
-        background:#e9ecef; color:#495057;
-        padding:3px 10px; border-radius:12px;
-        font-size:11px; font-weight:bold; letter-spacing:.3px;
-    }
+    .badge-admin { display:inline-flex; align-items:center; gap:5px;
+        background:#fff3cd; color:#856404; padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px; }
+    .badge-super { display:inline-flex; align-items:center; gap:5px;
+        background:#dc3545; color:#fff; padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px; }
+    .badge-visitante { display:inline-flex; align-items:center; gap:5px;
+        background:#e9ecef; color:#495057; padding:3px 10px; border-radius:12px;
+        font-size:11px; font-weight:bold; letter-spacing:.3px; }
 
     .kpis { display:flex; gap:15px; flex-wrap:wrap; margin-bottom:20px; }
-    .kpi {
-        background:#fff; border-radius:8px; padding:14px 22px;
+    .kpi { background:#fff; border-radius:8px; padding:14px 22px;
         box-shadow:0 1px 3px rgba(0,0,0,.1); min-width:180px;
-        border-left:5px solid #0069d9;
-    }
+        border-left:5px solid #0069d9; }
     .kpi .rotulo { font-size:11px; text-transform:uppercase; color:#666; letter-spacing:1px; }
     .kpi .valor  { font-size:26px; font-weight:bold; color:#0069d9; margin-top:2px; }
     .kpi .sub    { font-size:11px; color:#888; margin-top:2px; }
@@ -470,17 +580,19 @@ $cargos = $pdo->query(
     .kpi.laranja { border-left-color:#fd7e14; } .kpi.laranja .valor { color:#fd7e14; }
     .kpi.cinza   { border-left-color:#6c757d; } .kpi.cinza .valor { color:#6c757d; }
     .kpi.violeta { border-left-color:#4a1d96; } .kpi.violeta .valor { color:#4a1d96; }
+    .kpi.azul    { border-left-color:#4363d8; } .kpi.azul .valor { color:#4363d8; }
 
-    /* Filtros */
     .filtros { background:#fff; padding:14px 16px; border-radius:8px;
                box-shadow:0 1px 3px rgba(0,0,0,.1); margin-bottom:20px;
-               display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+               display:flex; flex-wrap:wrap; align-items:center; gap:10px;
+               border-left:5px solid #0069d9; }
     .filtros label { font-weight:bold; font-size:13px; }
     .filtros select, .filtros button {
         padding:7px 10px; border-radius:4px; border:1px solid #ccc; font-size:14px;
         font-family: inherit;
     }
-    .btn-consultar { background:#0069d9; color:#fff; border:none; cursor:pointer; }
+    .btn-consultar { background:#0069d9; color:#fff; border:none; cursor:pointer;
+                     font-weight:bold; }
     .btn-consultar:hover { background:#0053b3; }
     .btn-limpar { background:#6c757d; color:#fff; text-decoration:none; padding:7px 12px;
                   border-radius:4px; font-size:14px; }
@@ -499,12 +611,12 @@ $cargos = $pdo->query(
     .select2-container--default .select2-results__option--highlighted[aria-selected] {
         background-color: #0069d9;
     }
+    #ano + .select2-container         { min-width: 110px; }
     #candidato + .select2-container   { min-width: 260px; max-width: 360px; }
     #coordenador + .select2-container { min-width: 240px; max-width: 320px; }
     #lideranca + .select2-container   { min-width: 220px; max-width: 300px; }
     #cargo + .select2-container       { min-width: 150px; }
 
-    /* Mensagem sem filtro */
     .msg-sem-filtro {
         background:#fff; border-left:5px solid #0069d9;
         padding:32px 36px; border-radius:8px;
@@ -559,6 +671,20 @@ $cargos = $pdo->query(
         font-size:10.5px; background:#e7d9ff; color:#4a1d96;
         padding:1px 6px; border-radius:8px; font-weight:bold;
     }
+    .legenda-grupos .tipo-box {
+        display:inline-flex; align-items:center; gap:6px;
+        background:#f8f9fb; padding:4px 10px; border-radius:6px;
+        font-size:12.5px; font-weight:600;
+    }
+    .legenda-grupos .divisor {
+        flex-basis:100%; height:0; border-top:1px dashed #e3e6ec; margin-top:2px;
+    }
+    .legenda-grupos .grupo-item {
+        display:inline-flex; align-items:center; gap:6px;
+        background:#f8f9fb; padding:4px 10px; border-radius:6px;
+        font-size:12.5px; cursor:pointer;
+    }
+    .legenda-grupos .grupo-item:hover { background:#eef2fa; }
 
     .badges-filtros { margin-bottom:14px; }
     .badge-filtro {
@@ -591,8 +717,6 @@ $cargos = $pdo->query(
         padding: 4px 8px;
         box-shadow: 0 1px 3px rgba(0,0,0,.15);
     }
-    .leaflet-tooltip.tip-equipe .zona  { color:#0069d9; font-weight:bold; }
-    .leaflet-tooltip.tip-equipe .secao { color:#6f42c1; font-weight:bold; }
 
     .zona-label {
         background: transparent !important;
@@ -633,9 +757,6 @@ $cargos = $pdo->query(
 
 <a href="index.php" class="link-voltar">&larr; Voltar ao menu</a>
 
-<!-- ============================================================
-     CARD DO USUÁRIO LOGADO
-     ============================================================ -->
 <div class="barra-usuario <?= $isAdmin ? ($__ehSuper ? 'super' : 'admin') : '' ?>">
     <span>
         👤 <span class="saudacao">Olá,</span>
@@ -657,42 +778,60 @@ $cargos = $pdo->query(
 
 <h1>Mapa de Calor — Coordenadores e Lideranças</h1>
 <div class="subtitulo">
-    Cada seção é um ponto colorido pela cor do grupo responsável.
-    O <strong>polígono azul</strong> marca a <strong>área geográfica da zona eleitoral</strong>,
-    traçada a partir das localizações dos locais de votação dela.
+    🔵 <strong>Seções do coordenador</strong> (diretas) ·
+    🟠 <strong>Seções da liderança</strong>.
+    Quando a mesma seção aparece nos dois, a <strong>liderança tem prioridade</strong>
+    (sem dupla contagem). O <strong>polígono azul</strong> marca a área da zona eleitoral.
+    Seções no formato <strong>#Zzona-Ssecao</strong>.
 </div>
 
 <p class="info-detect">
     Coluna de votos: <strong><?= htmlspecialchars($COL_VOTOS) ?></strong>
     &nbsp;·&nbsp;
-    Coluna de candidato em <code>coordenadores</code>:
-    <?php if ($temCandidatoCoord): ?><strong>nomeCandidatoResp</strong>
-    <?php else: ?><span class="aviso-inline">NÃO EXISTE — filtro de candidato não restringe a equipe</span><?php endif; ?>
+    <code>numero_candidato</code> + <code>ano_campanha</code> em <code>coordenadores</code>:
+    <?php if ($temNumeroCandCoord && $temAnoCampanha): ?><strong>ok</strong>
+    <?php else: ?><span class="aviso-inline">colunas ausentes</span><?php endif; ?>
     &nbsp;·&nbsp;
-    Tabela <code>lider_secao</code>:
-    <?php if ($temLiderSecao): ?><strong>existe</strong>
-    <?php else: ?><span class="aviso-inline">não existe</span><?php endif; ?>
+    <code>lider_secao</code>:
+    <?php if ($temLiderSecao): ?><strong>ok</strong>
+    <?php else: ?><span class="aviso-inline">ausente</span><?php endif; ?>
+    &nbsp;·&nbsp;
+    <code>coordenador_secao</code>:
+    <?php if ($temCoordSecao): ?><strong>ok</strong>
+    <?php else: ?><span class="aviso-inline">ausente</span><?php endif; ?>
 </p>
 
 <form method="get" action="mapa_calor_equipe.php" id="form-filtros" class="filtros">
 
-    <label for="candidato">Candidato:</label>
-    <select name="candidato" id="candidato">
-        <option value="">Todos</option>
-        <?php foreach ($candidatos as $c): ?>
-            <option value="<?= htmlspecialchars($c) ?>"
-                <?= $c === $candidato ? 'selected' : '' ?>>
-                <?= htmlspecialchars($c) ?>
+    <label for="ano">Ano:</label>
+    <select name="ano" id="ano" style="min-width:110px;">
+        <option value="0">Ano</option>
+        <?php foreach ($listaAnos as $a): ?>
+            <option value="<?= (int)$a ?>" <?= ((int)$a === $ano) ? 'selected' : '' ?>>
+                <?= (int)$a ?>
             </option>
         <?php endforeach; ?>
     </select>
 
+    <label for="candidato">Candidato:</label>
+    <select name="candidato" id="candidato" style="min-width:260px;">
+        <option value="0">Todos</option>
+        <?php foreach ($listaCandidatos as $c): ?>
+            <option value="<?= (int)$c['numero'] ?>"
+                <?= ((int)$c['numero'] === $candidato) ? 'selected' : '' ?>>
+                Nº <?= (int)$c['numero'] ?> — <?= htmlspecialchars($c['nome']) ?>
+                <?= $c['cargo'] ? ' (' . htmlspecialchars($c['cargo']) . ')' : '' ?>
+            </option>
+        <?php endforeach; ?>
+    </select>
+
+    <?php if ($mostrarMapa): ?>
     <label for="coordenador">Coordenador:</label>
-    <select name="coordenador_id" id="coordenador">
+    <select name="coordenador_id" id="coordenador" style="min-width:220px;">
         <option value="">Todos</option>
         <?php foreach ($coordenadores as $c): ?>
             <option value="<?= (int)$c['id'] ?>"
-                <?= (int)$c['id'] === $coordId ? 'selected' : '' ?>>
+                <?= ((int)$c['id'] === $coordId) ? 'selected' : '' ?>>
                 <?= htmlspecialchars($c['nome']) ?>
                 <?= (int)$c['ativo'] === 0 ? ' (inativo)' : '' ?>
             </option>
@@ -700,20 +839,29 @@ $cargos = $pdo->query(
     </select>
 
     <label for="lideranca">Liderança:</label>
-    <select name="lider_id" id="lideranca">
+    <select name="lider_id" id="lideranca" style="min-width:220px;">
         <option value="">Todas</option>
+        <?php foreach ($liderancasTodas as $l): ?>
+            <option value="<?= (int)$l['id'] ?>"
+                    data-coord="<?= (int)$l['coordenador_id'] ?>"
+                <?= ((int)$l['id'] === $liderId) ? 'selected' : '' ?>>
+                <?= htmlspecialchars($l['nome']) ?>
+                <?= (int)$l['ativo'] === 0 ? ' (inativa)' : '' ?>
+            </option>
+        <?php endforeach; ?>
     </select>
 
     <label for="cargo">Cargo:</label>
-    <select name="cargo" id="cargo">
+    <select name="cargo" id="cargo" style="min-width:160px;">
         <option value="">Todos</option>
-        <?php foreach ($cargos as $c): ?>
+        <?php foreach ($listaCargos as $c): ?>
             <option value="<?= htmlspecialchars($c) ?>"
                 <?= $c === $cargo ? 'selected' : '' ?>>
                 <?= htmlspecialchars($c) ?>
             </option>
         <?php endforeach; ?>
     </select>
+    <?php endif; ?>
 
     <button type="submit" class="btn-consultar">Aplicar</button>
     <a href="mapa_calor_equipe.php" class="btn-limpar">Limpar</a>
@@ -723,10 +871,17 @@ $cargos = $pdo->query(
 <div class="badges-filtros">
     <span style="font-size:12px; color:#666; margin-right:8px;">Filtros ativos:</span>
 
-    <?php if ($candidato !== ''): ?>
+    <?php if ($ano > 0): ?>
         <span class="badge-filtro">
-            🗳 <?= htmlspecialchars($candidato) ?>
-            <a class="x" href="?<?= http_build_query(['candidato' => '', 'coordenador_id' => $coordId, 'lider_id' => $liderId, 'cargo' => $cargo]) ?>">×</a>
+            📅 <?= (int)$ano ?>
+            <a class="x" href="?<?= http_build_query(['ano' => 0, 'candidato' => 0, 'coordenador_id' => 0, 'lider_id' => 0, 'cargo' => $cargo]) ?>">×</a>
+        </span>
+    <?php endif; ?>
+
+    <?php if ($candidato > 0): ?>
+        <span class="badge-filtro">
+            🗳 Nº <?= (int)$candidato ?> — <?= htmlspecialchars($nomeCandidato) ?>
+            <a class="x" href="?<?= http_build_query(['ano' => $ano, 'candidato' => 0, 'coordenador_id' => 0, 'lider_id' => 0, 'cargo' => $cargo]) ?>">×</a>
         </span>
     <?php endif; ?>
 
@@ -738,7 +893,7 @@ $cargos = $pdo->query(
     ?>
         <span class="badge-filtro">
             👔 <?= htmlspecialchars($nomeC) ?>
-            <a class="x" href="?<?= http_build_query(['candidato' => $candidato, 'coordenador_id' => 0, 'lider_id' => $liderId, 'cargo' => $cargo]) ?>">×</a>
+            <a class="x" href="?<?= http_build_query(['ano' => $ano, 'candidato' => $candidato, 'coordenador_id' => 0, 'lider_id' => 0, 'cargo' => $cargo]) ?>">×</a>
         </span>
     <?php endif; ?>
 
@@ -750,14 +905,14 @@ $cargos = $pdo->query(
     ?>
         <span class="badge-filtro">
             👤 <?= htmlspecialchars($nomeL) ?>
-            <a class="x" href="?<?= http_build_query(['candidato' => $candidato, 'coordenador_id' => $coordId, 'lider_id' => 0, 'cargo' => $cargo]) ?>">×</a>
+            <a class="x" href="?<?= http_build_query(['ano' => $ano, 'candidato' => $candidato, 'coordenador_id' => $coordId, 'lider_id' => 0, 'cargo' => $cargo]) ?>">×</a>
         </span>
     <?php endif; ?>
 
     <?php if ($cargo !== ''): ?>
         <span class="badge-filtro">
             💼 <?= htmlspecialchars($cargo) ?>
-            <a class="x" href="?<?= http_build_query(['candidato' => $candidato, 'coordenador_id' => $coordId, 'lider_id' => $liderId, 'cargo' => '']) ?>">×</a>
+            <a class="x" href="?<?= http_build_query(['ano' => $ano, 'candidato' => $candidato, 'coordenador_id' => $coordId, 'lider_id' => $liderId, 'cargo' => '']) ?>">×</a>
         </span>
     <?php endif; ?>
 </div>
@@ -767,25 +922,23 @@ $cargos = $pdo->query(
 
     <div class="msg-sem-filtro">
         <div class="icone">🗺️</div>
-        <h2>Selecione um filtro para visualizar o mapa</h2>
+        <h2>Selecione o ano e o candidato para visualizar o mapa</h2>
         <p>
-            Para evitar carregamento desnecessário, o mapa só é exibido
-            quando ao menos um dos filtros da equipe está definido.
+            O mapa só é exibido quando o <b>ano</b> e o <b>candidato</b> estão definidos.
         </p>
 
         <div class="passos">
-            <b>Escolha uma das opções:</b><br>
-            • 🗳 Um <b>Candidato</b> — mostra o time inteiro dele<br>
-            • 👔 Um <b>Coordenador</b> — mostra só as seções dele<br>
-            • 👤 Uma <b>Liderança</b> — mostra só as seções dela<br>
+            <b>Como usar:</b><br>
+            • 📅 Escolha um <b>ano</b><br>
+            • 🗳 Escolha um <b>candidato</b> (número da urna)<br>
+            • Opcional: filtre por <b>coordenador</b>, <b>liderança</b> ou <b>cargo</b><br>
             <br>
             Depois clique em <b>Aplicar</b>.
         </div>
 
         <div class="dica">
-            💡 Os filtros de <b>Cargo</b> sozinho não carregam o mapa —
-            ele apenas refina a contagem de votos quando combinado com
-            candidato, coordenador ou liderança.
+            💡 O filtro por cargo refina a contagem de votos quando há
+            mais de um cargo com o mesmo número de urna.
         </div>
     </div>
 
@@ -793,15 +946,9 @@ $cargos = $pdo->query(
 
     <div class="aviso">
         Nenhuma seção com coordenada encontrada para os filtros aplicados.
-        <?php if (!$temLiderSecao): ?>
-            <br><strong>Atenção:</strong> a tabela <code>lider_secao</code> não existe no banco.
-        <?php else: ?>
-            Verifique se <code>lider_secao</code> e <code>secoes_enderecos</code>
-            estão preenchidas.
-        <?php endif; ?>
-        <?php if ($candidato !== ''): ?>
-            <br><strong>Filtro ativo:</strong> <?= htmlspecialchars($candidato) ?> —
-            apenas coordenadores deste candidato foram considerados.
+        <?php if (!$temLiderSecao && !$temCoordSecao): ?>
+            <br><strong>Atenção:</strong> as tabelas <code>lider_secao</code> e
+            <code>coordenador_secao</code> não existem no banco.
         <?php endif; ?>
         <?php if ($secoesSemCoord > 0): ?>
             <br><strong><?= $secoesSemCoord ?></strong> seção(ões) foram
@@ -815,8 +962,9 @@ $cargos = $pdo->query(
         <div class="kpi violeta">
             <div class="rotulo">Candidato</div>
             <div class="valor" style="font-size:16px; line-height:1.3; word-break:break-word;">
-                <?= $candidato !== '' ? htmlspecialchars($candidato) : '— Todos —' ?>
+                Nº <?= (int)$candidato ?> — <?= htmlspecialchars($nomeCandidato) ?>
             </div>
+            <div class="sub">Ano <?= (int)$ano ?></div>
         </div>
 
         <div class="kpi">
@@ -845,6 +993,7 @@ $cargos = $pdo->query(
         <div class="kpi verde">
             <div class="rotulo">Total de votos no mapa</div>
             <div class="valor"><?= number_format($totalVotosMapa, 0, ',', '.') ?></div>
+            <div class="sub">(sem dupla contagem)</div>
         </div>
 
         <div class="kpi cinza">
@@ -853,6 +1002,18 @@ $cargos = $pdo->query(
             <?php if ($secoesSemCoord > 0): ?>
                 <div class="sub"><?= $secoesSemCoord ?> sem coord. (ignoradas)</div>
             <?php endif; ?>
+        </div>
+
+        <div class="kpi azul">
+            <div class="rotulo">🔵 Seções do coordenador</div>
+            <div class="valor"><?= number_format($totalSecoesCoord, 0, ',', '.') ?></div>
+            <div class="sub">diretas</div>
+        </div>
+
+        <div class="kpi laranja">
+            <div class="rotulo">🟠 Seções da liderança</div>
+            <div class="valor"><?= number_format($totalSecoesLider, 0, ',', '.') ?></div>
+            <div class="sub">via liderança</div>
         </div>
 
         <div class="kpi roxo">
@@ -896,18 +1057,37 @@ $cargos = $pdo->query(
     </div>
 
     <div class="legenda-grupos" id="legenda-grupos">
-        <?php foreach ($grupos as $g): ?>
-            <div class="item" data-grupo="<?= htmlspecialchars($g['id']) ?>">
-                <span class="cor" style="background: <?= htmlspecialchars($g['cor']['base']) ?>;"></span>
-                <span>
-                    <span class="nome"><?= htmlspecialchars($g['nome']) ?></span>
-                    <?php if ($g['candidato'] !== ''): ?>
-                        <span class="cand"><?= htmlspecialchars($g['candidato']) ?></span>
-                    <?php endif; ?>
-                    <span class="qtd">
-                        (<?= count($g['pontos']) ?> seç. ·
-                        <?= number_format(array_sum(array_column($g['pontos'], 'votos')), 0, ',', '.') ?> votos)
-                    </span>
+        <div class="tipo-box">
+            <span class="cor" style="background:#4363d8;"></span>
+            🔵 Seção do coordenador (direta)
+        </div>
+        <div class="tipo-box">
+            <span class="cor" style="background:#f58231;"></span>
+            🟠 Seção da liderança
+        </div>
+
+        <div class="divisor"></div>
+
+        <?php foreach ($grupos as $g):
+            $qtdCoord = 0; $qtdLider = 0;
+            foreach ($g['pontos'] as $p) {
+                if (($p['tipo'] ?? 'lideranca') === 'coordenador') $qtdCoord++;
+                else $qtdLider++;
+            }
+        ?>
+            <div class="grupo-item" data-grupo="<?= htmlspecialchars($g['id']) ?>"
+                 title="Clique para enquadrar este grupo">
+                <span class="nome"><?= htmlspecialchars($g['nome']) ?></span>
+                <?php if ($g['candidato'] !== ''): ?>
+                    <span class="cand"><?= htmlspecialchars($g['candidato']) ?></span>
+                <?php endif; ?>
+                <span class="qtd">
+                    (<?= count($g['pontos']) ?> seç. ·
+                    <?= number_format(array_sum(array_column($g['pontos'], 'votos')), 0, ',', '.') ?> votos<?php
+                    if ($qtdCoord > 0 && $qtdLider > 0) echo " · 🔵{$qtdCoord} 🟠{$qtdLider}";
+                    elseif ($qtdCoord > 0) echo " · 🔵{$qtdCoord}";
+                    elseif ($qtdLider > 0) echo " · 🟠{$qtdLider}";
+                    ?>)
                 </span>
             </div>
         <?php endforeach; ?>
@@ -922,6 +1102,10 @@ $cargos = $pdo->query(
         const RAIO_INICIAL = <?= (int)$raio ?>;
         const OPAC_INICIAL = <?= json_encode((float)$opacidade) ?>;
 
+        // Paletas fixas: coordenador = azul · liderança = laranja
+        const COR_COORD = { base:'#4363d8', leve:'#e0e7ff', medio:'#8fa3f0', forte:'#1a2f8a' };
+        const COR_LIDER = { base:'#f58231', leve:'#fff0e0', medio:'#fcc088', forte:'#a04a00' };
+
         (function () {
             function formatNum(n) { return Number(n).toLocaleString('pt-BR'); }
             function escapeHtml(s) {
@@ -929,6 +1113,7 @@ $cargos = $pdo->query(
                     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
                 })[c]);
             }
+            function fmtSecao(z, s) { return '#Z' + z + '-S' + s; }
 
             function cross(O, A, B) {
                 return (A.lat - O.lat) * (B.lng - O.lng) - (A.lng - O.lng) * (B.lat - O.lat);
@@ -974,6 +1159,7 @@ $cargos = $pdo->query(
 
             if (!GRUPOS.length) return;
 
+            // Evita sobreposição exata de pontos idênticos (mesmo local+seção)
             GRUPOS.forEach(g => {
                 const gruposCoord = {};
                 g.pontos.forEach(p => {
@@ -992,10 +1178,10 @@ $cargos = $pdo->query(
             });
 
             const bounds = L.latLngBounds([]);
-
             const camadaZonas  = L.layerGroup().addTo(mapa);
             const camadaLabels = L.layerGroup();
 
+            // ---------- POLÍGONOS DAS ZONAS ----------
             ZONAS.forEach(z => {
                 z.pontos.forEach(p => bounds.extend([p.lat, p.lng]));
                 if (!z.valida) return;
@@ -1048,42 +1234,53 @@ $cargos = $pdo->query(
                 mapa.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 });
             }
 
-            const heatLayers = [];
+            // ---------- SEPARA PONTOS POR TIPO ----------
+            const dadosCoord = [];
+            const dadosLider = [];
+
             GRUPOS.forEach(g => {
-                const dados = g.pontos.map(p => {
+                g.pontos.forEach(p => {
                     const peso = MAX_VOTOS > 0 ? (p.votos / MAX_VOTOS) : 0;
-                    return [p.lat, p.lng, peso];
+                    if (p.tipo === 'coordenador') dadosCoord.push([p.lat, p.lng, peso]);
+                    else                          dadosLider.push([p.lat, p.lng, peso]);
                 });
-
-                const gradiente = {
-                    0.0: g.cor.leve,
-                    0.4: g.cor.medio,
-                    0.75: g.cor.base,
-                    1.0: g.cor.forte,
-                };
-
-                const layer = L.heatLayer(dados, {
-                    radius: RAIO_INICIAL,
-                    blur: Math.round(RAIO_INICIAL * 0.8),
-                    maxZoom: 17,
-                    minOpacity: 0.3,
-                    opacity: OPAC_INICIAL,
-                    gradient: gradiente,
-                }).addTo(mapa);
-
-                heatLayers.push(layer);
             });
 
+            const heatLayers = [];
+
+            if (dadosCoord.length) {
+                heatLayers.push(L.heatLayer(dadosCoord, {
+                    radius: RAIO_INICIAL,
+                    blur: Math.round(RAIO_INICIAL * 0.8),
+                    maxZoom: 17, minOpacity: 0.3, opacity: OPAC_INICIAL,
+                    gradient: { 0.0: COR_COORD.leve, 0.4: COR_COORD.medio,
+                                0.75: COR_COORD.base, 1.0: COR_COORD.forte },
+                }).addTo(mapa));
+            }
+            if (dadosLider.length) {
+                heatLayers.push(L.heatLayer(dadosLider, {
+                    radius: RAIO_INICIAL,
+                    blur: Math.round(RAIO_INICIAL * 0.8),
+                    maxZoom: 17, minOpacity: 0.3, opacity: OPAC_INICIAL,
+                    gradient: { 0.0: COR_LIDER.leve, 0.4: COR_LIDER.medio,
+                                0.75: COR_LIDER.base, 1.0: COR_LIDER.forte },
+                }).addTo(mapa));
+            }
+
+            // ---------- MARCADORES (uma cor por tipo) ----------
             const marcadores = [];
             GRUPOS.forEach(g => {
                 g.pontos.forEach(p => {
+                    const ehLider = (p.tipo === 'lideranca');
+                    const cor = ehLider ? COR_LIDER : COR_COORD;
+
                     const raioPx = 4 + 8 * Math.sqrt(
                         MAX_VOTOS > 0 ? (p.votos / MAX_VOTOS) : 0
                     );
 
                     const html = `
                         <div style="min-width:230px;">
-                            <div><b>Zona ${p.zona}</b> · <b>Seção ${p.secao}</b></div>
+                            <div><b>${fmtSecao(p.zona, p.secao)}</b></div>
                             ${p.local ? '<div style="font-size:12px;color:#555;margin-top:3px;">' +
                                          escapeHtml(p.local) + '</div>' : ''}
                             ${p.municipio ? '<div style="font-size:12px;color:#888;">' +
@@ -1093,12 +1290,17 @@ $cargos = $pdo->query(
                                              '<span style="color:#4a1d96;">🗳</span> ' +
                                              '<b style="color:#4a1d96;">' + escapeHtml(p.candidato) + '</b></div>' : ''}
                             <div style="font-size:12px;">
-                                <span style="color:#0069d9;">👤</span>
+                                <span style="color:#4363d8;">👤</span>
                                 <b>${escapeHtml(p.coord)}</b>
                             </div>
-                            <div style="font-size:12px;">
-                                <span style="color:#6f42c1;">🤝</span>
-                                <b>${escapeHtml(p.lider)}</b>
+                            ${p.lider ? '<div style="font-size:12px;">' +
+                                '<span style="color:#f58231;">🤝</span> ' +
+                                '<b>' + escapeHtml(p.lider) + '</b></div>' : ''}
+                            <div style="font-size:11px; margin-top:4px;">
+                                <span style="background:${cor.base}; color:#fff;
+                                             padding:1px 8px; border-radius:8px; font-weight:bold;">
+                                    ${ehLider ? '🟠 Liderança' : '🔵 Coordenador'}
+                                </span>
                             </div>
                             <div style="margin-top:6px;">
                                 <b>${formatNum(p.votos)}</b> votos
@@ -1107,17 +1309,17 @@ $cargos = $pdo->query(
 
                     const marker = L.circleMarker([p.lat, p.lng], {
                         radius: raioPx,
-                        color: g.cor.forte,
+                        color: cor.forte,
                         weight: 1,
-                        fillColor: g.cor.base,
-                        fillOpacity: 0.35,
+                        fillColor: cor.base,
+                        fillOpacity: 0.45,
                         opacity: 0,
                     }).addTo(mapa);
 
                     marker.bindPopup(html);
                     marker.bindTooltip(
-                        'Zona <span class="zona">' + p.zona + '</span>' +
-                        ' · Seção <span class="secao">' + p.secao + '</span>' +
+                        '<span style="color:' + cor.forte + ';font-weight:bold;">' +
+                        (ehLider ? '🟠' : '🔵') + ' ' + fmtSecao(p.zona, p.secao) + '</span>' +
                         ' — <span class="votos">' + formatNum(p.votos) + ' votos</span>',
                         { sticky: true, className: 'tip-equipe', direction: 'top', offset: [0, -4] }
                     );
@@ -1125,6 +1327,7 @@ $cargos = $pdo->query(
                 });
             });
 
+            // ---------- CONTROLES ----------
             const rEl  = document.getElementById('ctrlRaio');
             const oEl  = document.getElementById('ctrlOpac');
             const rVal = document.getElementById('ctrlRaioVal');
@@ -1166,9 +1369,8 @@ $cargos = $pdo->query(
                     else                  mapa.removeLayer(camadaLabels);
                 });
 
-            document.querySelectorAll('.legenda-grupos .item').forEach(el => {
-                el.style.cursor = 'pointer';
-                el.title = 'Clique para enquadrar este grupo';
+            // Clique na legenda → enquadra o grupo
+            document.querySelectorAll('.legenda-grupos .grupo-item').forEach(el => {
                 el.addEventListener('click', () => {
                     const gid = el.dataset.grupo;
                     const g = GRUPOS.find(x => x.id === gid);
@@ -1189,13 +1391,19 @@ $cargos = $pdo->query(
 <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/i18n/pt-BR.js"></script>
 
 <script>
-    const LIDERANCAS_TODAS    = <?= json_encode($liderancasTodas, JSON_UNESCAPED_UNICODE) ?>;
-    const COORD_SELECIONADO   = <?= (int)$coordId ?>;
-    const LIDER_SELECIONADA   = <?= (int)$liderId ?>;
-    const CAND_SELECIONADO    = <?= json_encode($candidato) ?>;
+    const ANO_SELECIONADO   = <?= (int)$ano ?>;
+    const CAND_SELECIONADO  = <?= (int)$candidato ?>;
+    const COORD_SELECIONADO = <?= (int)$coordId ?>;
+    const LIDER_SELECIONADA = <?= (int)$liderId ?>;
 
     (function () {
         if (typeof jQuery === 'undefined' || typeof jQuery.fn.select2 === 'undefined') return;
+
+        const $ano   = jQuery('#ano');
+        const $cand  = jQuery('#candidato');
+        const $coord = jQuery('#coordenador');
+        const $lider = jQuery('#lideranca');
+        const $cargo = jQuery('#cargo');
 
         function removerAcentos(s) {
             return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -1207,45 +1415,55 @@ $cargos = $pdo->query(
             return texto.indexOf(termo) > -1 ? data : null;
         }
 
-        const $coord = jQuery('#coordenador');
-        const $lider = jQuery('#lideranca');
-        const $cand  = jQuery('#candidato');
-        const $cargo = jQuery('#cargo');
-
         function initSel($el, placeholder) {
+            if (!$el || !$el.length) return;
             $el.select2({
                 language: 'pt-BR',
                 placeholder: placeholder,
                 allowClear: true,
                 width: 'resolve',
-                minimumInputLength: 0,
                 matcher: matcherSemAcento
             });
         }
 
         function popularLiderancas(coordId, liderSel) {
-            const opcoes = (coordId > 0)
-                ? LIDERANCAS_TODAS.filter(l => l.coordenador_id === coordId)
-                : LIDERANCAS_TODAS;
+            if (!$lider || !$lider.length) return;
 
             if ($lider.hasClass('select2-hidden-accessible')) $lider.select2('destroy');
-            $lider.empty();
-            $lider.append('<option value="">Todas</option>');
-            opcoes.forEach(l => {
-                const $opt = jQuery('<option>').val(l.id)
-                    .text(l.nome + (l.ativo === 0 ? ' (inativa)' : ''));
-                if (parseInt(l.id) === parseInt(liderSel)) $opt.prop('selected', true);
-                $lider.append($opt);
-            });
-            initSel($lider, 'Buscar liderança...');
+            $lider.html('<option value="">Carregando...</option>');
+
+            let url = 'mapa_calor_equipe.php?ajax=liderancas';
+            if (coordId > 0) url += '&coordenador_id=' + coordId;
+
+            fetch(url)
+                .then(r => r.json())
+                .then(lista => {
+                    $lider.html('<option value="">Todas</option>');
+                    (lista || []).forEach(l => {
+                        const $opt = jQuery('<option>')
+                            .val(l.id)
+                            .attr('data-coord', coordId)
+                            .text(l.nome + (parseInt(l.ativo) === 0 ? ' (inativa)' : ''));
+                        if (parseInt(l.id) === parseInt(liderSel)) $opt.prop('selected', true);
+                        $lider.append($opt);
+                    });
+                    initSel($lider, 'Buscar liderança...');
+                })
+                .catch(() => {
+                    $lider.html('<option value="">Erro ao carregar</option>');
+                    initSel($lider, 'Buscar liderança...');
+                });
         }
 
-        function popularCoordenadores(candidato, coordSel) {
+        function popularCoordenadores(ano, candidato, coordSel) {
+            if (!$coord || !$coord.length) return;
+
             if ($coord.hasClass('select2-hidden-accessible')) $coord.select2('destroy');
             $coord.html('<option value="">Carregando...</option>');
 
-            let url = 'mapa_calor_equipe.php?ajax=coordenadores_candidato';
-            if (candidato) url += '&candidato=' + encodeURIComponent(candidato);
+            let url = 'mapa_calor_equipe.php?ajax=coordenadores_listar';
+            if (ano > 0)        url += '&ano=' + ano;
+            if (candidato > 0)  url += '&candidato=' + candidato;
 
             fetch(url)
                 .then(r => r.json())
@@ -1259,13 +1477,7 @@ $cargos = $pdo->query(
                         $coord.append($opt);
                     });
                     initSel($coord, 'Buscar coordenador...');
-
-                    if (coordSel && !$coord.find('option[value="' + coordSel + '"]').length) {
-                        $coord.val('').trigger('change.select2');
-                        popularLiderancas(0, 0);
-                    } else {
-                        popularLiderancas(coordSel || 0, LIDER_SELECIONADA);
-                    }
+                    popularLiderancas(coordSel || 0, LIDER_SELECIONADA);
                 })
                 .catch(() => {
                     $coord.html('<option value="">Erro ao carregar</option>');
@@ -1273,30 +1485,59 @@ $cargos = $pdo->query(
                 });
         }
 
-        initSel($cand, 'Buscar candidato...');
-        initSel($cargo, 'Buscar cargo...');
+        initSel($ano,   'Ano');
+        initSel($cand,  'Buscar candidato...');
         initSel($coord, 'Buscar coordenador...');
         initSel($lider, 'Buscar liderança...');
+        initSel($cargo, 'Buscar cargo...');
 
-        $cand.on('select2:select select2:clear', function () {
-            const cand = $cand.val() || '';
-            popularCoordenadores(cand, 0);
-        });
-
-        $coord.on('select2:select select2:clear', function () {
-            popularLiderancas(parseInt($coord.val() || 0), 0);
-        });
-
-        [$cand, $coord, $lider, $cargo].forEach($el => {
-            $el.on('select2:select', function () {
+        if ($ano && $ano.length) {
+            $ano.on('select2:select select2:clear', function () {
+                if ($cand && $cand.length) {
+                    $cand.val('0').trigger('change.select2');
+                }
                 document.getElementById('form-filtros').submit();
             });
-            $el.on('select2:clear', function () {
+        }
+
+        if ($cand && $cand.length) {
+            $cand.on('select2:select select2:clear', function () {
+                if ($coord && $coord.length) {
+                    $coord.val('').trigger('change.select2');
+                }
+                if ($lider && $lider.length) {
+                    $lider.val('').trigger('change.select2');
+                }
                 document.getElementById('form-filtros').submit();
             });
-        });
+        }
 
-        popularCoordenadores(CAND_SELECIONADO, COORD_SELECIONADO);
+        if ($coord && $coord.length) {
+            $coord.on('select2:select select2:clear', function () {
+                const coordVal = parseInt($coord.val() || 0);
+                if ($lider && $lider.length) {
+                    popularLiderancas(coordVal, 0);
+                    $lider.val('').trigger('change.select2');
+                }
+                document.getElementById('form-filtros').submit();
+            });
+        }
+
+        if ($lider && $lider.length) {
+            $lider.on('select2:select select2:clear', function () {
+                document.getElementById('form-filtros').submit();
+            });
+        }
+
+        if ($cargo && $cargo.length) {
+            $cargo.on('select2:select select2:clear', function () {
+                document.getElementById('form-filtros').submit();
+            });
+        }
+
+        <?php if ($mostrarMapa): ?>
+        popularCoordenadores(ANO_SELECIONADO, CAND_SELECIONADO, COORD_SELECIONADO);
+        <?php endif; ?>
     })();
 </script>
 

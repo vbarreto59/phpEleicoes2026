@@ -7,6 +7,7 @@ require_once __DIR__ . '/conn_eleicoes.php';
 
 // Autenticação (usa $pdo carregado acima)
 require_once __DIR__ . '/auth.php';
+date_default_timezone_set('America/Sao_Paulo');
 
 // ------------------------------------------------------------
 // CONFIGURAÇÃO: quem pode ver o grupo "⚙ Admin" no menu
@@ -585,11 +586,24 @@ $__mostrarAdmin = ($__ehAdmin && $__ehDono);
         <div class="menu-drop">
             <a href="zonas.php" target="_blank" rel="noopener noreferrer">
                 <span class="icone">👁️</span>
-                <span class="texto">Z1-Visualizar Zonas</span>
+                <span class="texto">Z1-Visualizar Zonas/Mapa</span>
             </a>
+            <a href="zonas_lista.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">👁️</span>
+                <span class="texto">Z2-Visualizar Zonas/Listagem</span>
+            </a>  
+            <a href="zonas_bairros.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">👁️</span>
+                <span class="texto">Z3-Visualizar Zonas/Bairros</span>
+            </a> 
+            <a href="bairro_regiao_editor.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">👁️</span>
+                <span class="texto">Z4-Editar Bairros/Região</span>
+            </a>             
+
             <a href="editar_zonas.php" target="_blank" rel="noopener noreferrer">
                 <span class="icone">✏️</span>
-                <span class="texto">Z2-Editar Zonas</span>
+                <span class="texto">Z5-Editar Zonas</span>
             </a>
         </div>
     </div>

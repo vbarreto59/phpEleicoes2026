@@ -1,6 +1,7 @@
 <?php
 // login.php — Tela de login. Senhas em TEXTO PURO (sem hash).
 session_start();
+date_default_timezone_set('America/Sao_Paulo');
 
 // Se já está logado, vai pro index
 if (!empty($_SESSION['usuario_id'])) {

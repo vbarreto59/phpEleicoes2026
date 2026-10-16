@@ -1,0 +1,130 @@
+bairros
+-- Criar nova tabela específica para as regiões dos bairros
+CREATE TABLE IF NOT EXISTS regioes_bairro (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    nome VARCHAR(50) NOT NULL UNIQUE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Criar tabela de Bairros apontando para a nova tabela
+CREATE TABLE IF NOT EXISTS bairros (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    nome VARCHAR(100) NOT NULL,
+    municipio VARCHAR(50) NOT NULL DEFAULT 'RECIFE',
+    regiao_bairro_id INT NOT NULL,
+    FOREIGN KEY (regiao_bairro_id) REFERENCES regioes_bairro(id) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+=============================================================
+ALTER TABLE bairros
+    ADD COLUMN tipo_voto ENUM('Opinião','Estrutura') NOT NULL DEFAULT 'Estrutura'
+    AFTER regiao_bairro_id;
+
+UPDATE bairros SET tipo_voto = 'Opinião';
+===============================================
+
+
+
+INSERT INTO regioes_bairro (nome) VALUES 
+('Zona Norte'),
+('Zona Sul'),
+('Centro'),
+('Zona Oeste');
+
+INSERT INTO bairros (nome, municipio, regiao_bairro_id) VALUES
+-- ZONA NORTE
+('GRACAS', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('CASA AMARELA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('NOVA DESCOBERTA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('ARRUDA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('AGUA FRIA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('VASCO DA GAMA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('BEBERIBE', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('CASA FORTE', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('MACAXEIRA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('ROSARINHO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('TAMARINEIRA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('ESPINHEIRO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('ENCRUZILHADA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('PARNAMIRIM', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('FUNDAO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('LINHA DO TIRO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('POÇO DA PANELA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('BREJO DA GUABIRABA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('CAJUEIRO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('PORTO DA MADEIRA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('MONTEIRO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('BOMBA DO HEMETERIO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('CAMPINA DO BARRETO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('AFLITOS', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('ALTO JOSE BONIFACIO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('BREJO DE BEBERIBE', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('GUABIRABA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('ALTO JOSE DO PINHO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('DOIS IRMAOS', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('PASSARINHO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('MORRO DA CONCEICAO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('CORREGO DO JENIPAPO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('APIPUCOS', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('MANGABEIRA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('ALTO DO MANDU', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+('ALTO SANTA TEREZINHA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Norte')),
+
+-- ZONA SUL
+('BOA VIAGEM', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('IMBIRIBEIRA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('PINA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('IBURA DE BAIXO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('IPSEP', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('UR 2 - IBURA ALTO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('JORDAO BAIXO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('COHAB', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('UR 1 - IBURA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('IBURA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('BRASILIA TEIMOSA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('LAGOA ENCANTADA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('MONTE VERDE - IBURA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('UR 3 - IBURA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('JORDÃO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('TRES CARNEIROS', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('UR-4', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+('JORDAO ALTO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Sul')),
+
+-- CENTRO
+('BOA VISTA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Centro')),
+('SANTO AMARO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Centro')),
+('CAMPO GRANDE', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Centro')),
+('HIPODROMO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Centro')),
+('SAO JOSE', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Centro')),
+('ILHA JOANA BEZERRA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Centro')),
+('DERBY', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Centro')),
+('ILHA DO LEITE', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Centro')),
+('TORREAO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Centro')),
+('CABANGA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Centro')),
+
+-- ZONA OESTE
+('MADALENA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('CORDEIRO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('JARDIM SÃO PAULO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('IPUTINGA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('AFOGADOS', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('TEJIPIÓ', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('VARZEA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('ESTÂNCIA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('AREIAS', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('ENGENHO DO MEIO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('SAN MARTIN', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('MUSTARDINHA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('CIDADE UNIVERSITARIA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('TORROES', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('TORRE', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('SANCHO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('UR-7 VARZEA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('BARRO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('ZUMBI', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('CAXANGA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('BONGI', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('BRASILIT', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('ILHA DO RETIRO', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('CAPUNGA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('JARDIM UCHÔA', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste')),
+('TOTÓ', 'RECIFE', (SELECT id FROM regioes_bairro WHERE nome = 'Zona Oeste'));

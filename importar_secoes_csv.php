@@ -10,7 +10,7 @@
 // Uso:
 //   - Navegador: http://localhost/phpEleicoes2026/importar_secoes_csv.php
 //   - Terminal:  php importar_secoes_csv.php
-
+date_default_timezone_set('America/Sao_Paulo');
 set_time_limit(0);
 ignore_user_abort(true);
 ini_set('memory_limit', '512M');

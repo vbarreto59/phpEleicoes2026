@@ -1,6 +1,7 @@
 <?php
 // baixar_malha_pe.php
 // Executa 1 vez para gerar br_pe.json com municípios de PE
+date_default_timezone_set('America/Sao_Paulo');
 
 $uf = 'PE';
 $saida = __DIR__ . '/br_pe.json';

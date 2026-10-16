@@ -4,6 +4,8 @@
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
 require_once __DIR__ . '/auth.php';
+// Define o fuso horário para o horário de Brasília
+date_default_timezone_set('America/Sao_Paulo');
 
 $pdo = new PDO(
     "mysql:host=$DB_HOST;dbname=$DB_NAME;charset=utf8mb4",
@@ -15,7 +17,7 @@ $pdo = new PDO(
 );
 
 // ------------------------------------------------------------
-// Fallback: garante que as variáveis de usuário existam
+// Fallback: usuário logado
 // ------------------------------------------------------------
 if (!isset($__u)) {
     if (function_exists('usuarioLogado')) {
@@ -43,21 +45,18 @@ $__ehAdmin = ($__ehSuper || $__ehAdminNivel);
 $isAdmin   = ($__ehAdmin && $__ehDono);
 
 if ($__ehSuper) {
-    $__classePerfil = 'super';
-    $__rotuloPerfil = 'SUPERADMIN';
+    $__classePerfil = 'super'; $__rotuloPerfil = 'SUPERADMIN';
 } elseif ($__ehAdminNivel) {
-    $__classePerfil = 'admin';
-    $__rotuloPerfil = 'ADMIN';
+    $__classePerfil = 'admin'; $__rotuloPerfil = 'ADMIN';
 } else {
-    $__classePerfil = 'visitante';
-    $__rotuloPerfil = 'VISITANTE';
+    $__classePerfil = 'visitante'; $__rotuloPerfil = 'VISITANTE';
 }
 
 // ============================================================
 // DETECÇÃO DE ESTRUTURAS
 // ============================================================
 
-// ---------- coluna de votos em `votos` ----------
+// ---------- colunas de votos ----------
 $colunasVotos = [];
 foreach ($pdo->query("SHOW COLUMNS FROM votos") as $c) $colunasVotos[] = $c['Field'];
 
@@ -72,8 +71,7 @@ foreach ($candidatosVotos as $cand) {
 }
 if ($COL_VOTOS === null) {
     foreach ($pdo->query("SHOW COLUMNS FROM votos") as $c) {
-        $field = $c['Field'];
-        $type  = strtolower($c['Type']);
+        $field = $c['Field']; $type = strtolower($c['Type']);
         if (in_array($field, ['numeroZona','numeroSecao','id'], true)) continue;
         if (str_contains($type,'int')||str_contains($type,'decimal')
             ||str_contains($type,'float')||str_contains($type,'double')) {
@@ -81,42 +79,34 @@ if ($COL_VOTOS === null) {
         }
     }
 }
-if ($COL_VOTOS === null) {
-    die("Não foi possível detectar a coluna de votos na tabela `votos`.");
-}
+if ($COL_VOTOS === null) die("Não foi possível detectar a coluna de votos em `votos`.");
 
-// ---------- coluna de expectativa em `liderancas` ----------
-$colunasLider = [];
-foreach ($pdo->query("SHOW COLUMNS FROM liderancas") as $c) $colunasLider[] = $c['Field'];
+$temTipoVotavel   = in_array('cdTipoVotavel',  $colunasVotos, true);
+$temCargoPergunta = in_array('cargoPergunta', $colunasVotos, true);
 
-$candidatosExpect = [
-    'expectativa_votos','expectativa','votos_esperados','qtd_esperada',
-    'qtde_esperada','previsao','meta','previsao_votos','votos_previstos',
-];
-$COL_EXPECT = null;
-foreach ($candidatosExpect as $cand) {
-    if (in_array($cand, $colunasLider, true)) { $COL_EXPECT = $cand; break; }
-}
-$EXPECT_SQL = $COL_EXPECT ? "l.`$COL_EXPECT`" : "0";
-
-// ---------- coluna de candidato em `coordenadores` ----------
+// ---------- colunas de coordenadores ----------
 $colunasCoord = [];
 foreach ($pdo->query("SHOW COLUMNS FROM coordenadores") as $c) $colunasCoord[] = $c['Field'];
-$temCandidatoCoord = in_array('nomeCandidatoResp', $colunasCoord, true);
-$CAND_SQL = $temCandidatoCoord ? "c.nomeCandidatoResp" : "NULL";
+$temNumeroCandCoord = in_array('numero_candidato',  $colunasCoord, true);
+$temAnoCampanha     = in_array('ano_campanha',      $colunasCoord, true);
+$temExpectativaCoord= in_array('expectativa_votos', $colunasCoord, true);
 
-// ---------- tabela lider_secao existe? ----------
+// ---------- colunas de liderancas ----------
+$colunasLider = [];
+foreach ($pdo->query("SHOW COLUMNS FROM liderancas") as $c) $colunasLider[] = $c['Field'];
+$temExpectativaLider = in_array('expectativa_votos', $colunasLider, true);
+
+// ---------- tabelas opcionais ----------
 $temLiderSecao = false;
-try { $pdo->query("SELECT 1 FROM lider_secao LIMIT 1"); $temLiderSecao = true; }
-catch (Exception $e) { $temLiderSecao = false; }
+$temCoordSecao = false;
+try { $pdo->query("SELECT 1 FROM lider_secao LIMIT 1");     $temLiderSecao = true; } catch (Exception $e) {}
+try { $pdo->query("SELECT 1 FROM coordenador_secao LIMIT 1"); $temCoordSecao = true; } catch (Exception $e) {}
 
 // ============================================================
 // HELPERS
 // ============================================================
 function classificarSituacao(int $esperado, int $urnas): array {
-    if ($esperado <= 0) {
-        return ['rotulo' => 'Sem meta', 'classe' => 'sit-sem', 'icone' => '—'];
-    }
+    if ($esperado <= 0) return ['rotulo' => 'Sem meta', 'classe' => 'sit-sem', 'icone' => '—'];
     if ($urnas >= $esperado) {
         return $urnas > $esperado
             ? ['rotulo' => 'Acima',   'classe' => 'sit-acima',  'icone' => '▲']
@@ -133,52 +123,75 @@ function fmtPct(?float $p): string {
 function fmtNum(int|float|null $n): string {
     return $n === null ? '—' : number_format((float)$n, 0, ',', '.');
 }
+function fmtSecao(int $z, int $s): string {
+    return '#Z' . $z . '-S' . $s;
+}
 
 // ============================================================
 // FILTROS
 // ============================================================
-$filtroCand   = trim($_GET['cand']   ?? '');
-$filtroCoord  = (int)($_GET['coord'] ?? 0);
-$filtroLider  = (int)($_GET['lider'] ?? 0);
+$filtroAno    = (int)($_GET['ano']    ?? 0);
+$filtroCand   = (int)($_GET['cand']   ?? 0);   // agora é o número da urna
+$filtroCoord  = (int)($_GET['coord']  ?? 0);
+$filtroLider  = (int)($_GET['lider']  ?? 0);
 $filtroStatus = $_GET['status'] ?? 'todas';
+if (!in_array($filtroStatus, ['todas','ativas','inativas'], true)) $filtroStatus = 'todas';
 
-if (!in_array($filtroStatus, ['todas','ativas','inativas'], true)) {
-    $filtroStatus = 'todas';
-}
+$mostrarLista = ($filtroAno > 0 && $filtroCand > 0);
 
+// lista de anos
+$listaAnos = $pdo->query(
+    "SELECT DISTINCT ano FROM votos WHERE ano > 0 ORDER BY ano DESC"
+)->fetchAll(PDO::FETCH_COLUMN);
+
+// lista de candidatos do ano selecionado
 $listaCandidatos = [];
-if ($temCandidatoCoord) {
-    $listaCandidatos = $pdo->query(
-        "SELECT DISTINCT nomeCandidatoResp FROM coordenadores
-          WHERE nomeCandidatoResp IS NOT NULL AND nomeCandidatoResp <> ''
-          ORDER BY nomeCandidatoResp"
-    )->fetchAll(PDO::FETCH_COLUMN);
-}
-
-if ($temCandidatoCoord && $filtroCand !== '') {
+if ($filtroAno > 0) {
     $stmt = $pdo->prepare(
-        "SELECT id, nome, ativo, nomeCandidatoResp
-           FROM coordenadores
-          WHERE nomeCandidatoResp = :c
-          ORDER BY ativo DESC, nome"
+        "SELECT numero,
+                MIN(nomeCandidatoResp) AS nome,
+                MIN(nomeCargoPerg)     AS cargo
+           FROM votos
+          WHERE ano = :ano AND numero > 0 AND nomeCandidatoResp <> ''
+          GROUP BY numero
+          ORDER BY nome"
     );
-    $stmt->execute([':c' => $filtroCand]);
-    $listaCoords = $stmt->fetchAll();
-} else {
-    $listaCoords = $pdo->query(
-        "SELECT id, nome, ativo" . ($temCandidatoCoord ? ", nomeCandidatoResp" : "") . "
-           FROM coordenadores
-          ORDER BY ativo DESC, nome"
-    )->fetchAll();
+    $stmt->execute([':ano' => $filtroAno]);
+    $listaCandidatos = $stmt->fetchAll();
 }
 
-$listaLideres = $pdo->query(
-    "SELECT l.id, l.nome, l.coordenador_id, l.ativo
-       FROM liderancas l
-       INNER JOIN coordenadores c ON c.id = l.coordenador_id
-      ORDER BY c.nome, l.nome"
-)->fetchAll();
+// lista de coordenadores do ano/candidato
+$listaCoords = [];
+if ($mostrarLista) {
+    $sql = "SELECT c.id, c.nome, c.ativo, c.numero_candidato, c.ano_campanha
+              FROM coordenadores c
+             WHERE 1=1";
+    $pars = [];
+    if ($temAnoCampanha)         { $sql .= " AND c.ano_campanha = :ano";     $pars[':ano'] = $filtroAno; }
+    if ($temNumeroCandCoord)     { $sql .= " AND c.numero_candidato = :num"; $pars[':num'] = $filtroCand; }
+    $sql .= " ORDER BY c.ativo DESC, c.nome";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($pars);
+    $listaCoords = $stmt->fetchAll();
+}
 
+// lista de lideranças
+$listaLideres = [];
+if ($mostrarLista) {
+    $sql = "SELECT l.id, l.nome, l.coordenador_id, l.ativo
+              FROM liderancas l
+              INNER JOIN coordenadores c ON c.id = l.coordenador_id
+             WHERE 1=1";
+    $pars = [];
+    if ($temAnoCampanha)     { $sql .= " AND c.ano_campanha = :ano";     $pars[':ano'] = $filtroAno; }
+    if ($temNumeroCandCoord) { $sql .= " AND c.numero_candidato = :num"; $pars[':num'] = $filtroCand; }
+    $sql .= " ORDER BY c.nome, l.nome";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($pars);
+    $listaLideres = $stmt->fetchAll();
+}
+
+// se escolheu uma liderança, força o coordenador dela
 if ($filtroLider > 0) {
     foreach ($listaLideres as $ll) {
         if ((int)$ll['id'] === $filtroLider) {
@@ -188,65 +201,80 @@ if ($filtroLider > 0) {
     }
 }
 
-$whereLid    = [];
-$paramsLid   = [];
-$whereCoord  = [];
-$paramsCoord = [];
-
-if ($temCandidatoCoord && $filtroCand !== '') {
-    $whereLid[]    = "c.nomeCandidatoResp = :fcand";
-    $paramsLid[':fcand'] = $filtroCand;
-    $whereCoord[]  = "c.nomeCandidatoResp = :fcand2";
-    $paramsCoord[':fcand2'] = $filtroCand;
+// ============================================================
+// FILTRO PADRONIZADO DE VOTOS DO CANDIDATO
+// (numero + ano + nome preenchido + tipo + cargo principal)
+// ============================================================
+function filtroCandVotos(string $aliasCoord, string $colVotos, bool $temTipo, bool $temCargo): string {
+    $f  = " AND v.numero = {$aliasCoord}.numero_candidato ";
+    $f .= " AND v.ano    = {$aliasCoord}.ano_campanha ";
+    $f .= " AND v.nomeCandidatoResp <> '' ";
+    if ($temTipo)  $f .= " AND v.cdTipoVotavel = 1 ";
+    if ($temCargo) {
+        $f .= " AND v.cargoPergunta = (
+                    SELECT v2.cargoPergunta FROM votos v2
+                     WHERE v2.numero = {$aliasCoord}.numero_candidato
+                       AND v2.ano    = {$aliasCoord}.ano_campanha
+                       AND v2.nomeCandidatoResp <> ''
+                     GROUP BY v2.cargoPergunta
+                     ORDER BY SUM(v2.`$colVotos`) DESC
+                     LIMIT 1
+                 ) ";
+    }
+    return $f;
 }
-if ($filtroCoord > 0) {
-    $whereLid[]    = "l.coordenador_id = :fcoord";
-    $paramsLid[':fcoord'] = $filtroCoord;
-    $whereCoord[]  = "c.id = :fcoord2";
-    $paramsCoord[':fcoord2'] = $filtroCoord;
-}
-if ($filtroLider > 0) {
-    $whereLid[]    = "l.id = :flider";
-    $paramsLid[':flider'] = $filtroLider;
-}
-if ($filtroStatus === 'ativas')   $whereLid[] = "l.ativo = 1";
-if ($filtroStatus === 'inativas') $whereLid[] = "l.ativo = 0";
-
-$whereLidStr   = $whereLid   ? ('WHERE ' . implode(' AND ', $whereLid)) : '';
-$whereCoordStr = $whereCoord ? ('WHERE ' . implode(' AND ', $whereCoord)) : '';
 
 // ============================================================
 // 1) LIDERANÇAS
 // ============================================================
-$subSecoesUrnas = $temLiderSecao
-    ? "(SELECT COALESCE(SUM(v.`$COL_VOTOS`), 0)
-          FROM votos v
-         WHERE (v.numeroZona, v.numeroSecao) IN (
-                SELECT ls.numeroZona, ls.numeroSecao
-                  FROM lider_secao ls
-                 WHERE ls.lider_id = l.id
-         ))"
-    : "0";
-$subQtdSecoes = $temLiderSecao
-    ? "(SELECT COUNT(*) FROM lider_secao ls WHERE ls.lider_id = l.id)"
-    : "0";
+$liderancas = [];
+if ($mostrarLista) {
+    $filtroCandVotos = filtroCandVotos('c', $COL_VOTOS, $temTipoVotavel, $temCargoPergunta);
 
-$sqlLid = "
-    SELECT l.id, l.nome, l.ativo,
-           $EXPECT_SQL AS expectativa_votos,
-           c.id   AS coord_id,
-           c.nome AS coord_nome,
-           c.ativo AS coord_ativo,
-           $subSecoesUrnas AS votos_urnas,
-           $subQtdSecoes   AS qtd_secoes
-    FROM liderancas l
-    INNER JOIN coordenadores c ON c.id = l.coordenador_id
-    $whereLidStr
-    ORDER BY c.nome, l.nome
-";
-$stmt = $pdo->prepare($sqlLid);
-$stmt->execute($paramsLid);
-$liderancas = $stmt->fetchAll();
+    $subSecoesUrnas = $temLiderSecao
+        ? "(SELECT COALESCE(SUM(v.`$COL_VOTOS`), 0)
+              FROM votos v
+             WHERE 1=1 $filtroCandVotos
+               AND (v.numeroZona, v.numeroSecao) IN (
+                    SELECT ls.numeroZona, ls.numeroSecao
+                      FROM lider_secao ls
+                     WHERE ls.lider_id = l.id
+               ))"
+        : "0";
+    $subQtdSecoes = $temLiderSecao
+        ? "(SELECT COUNT(*) FROM lider_secao ls WHERE ls.lider_id = l.id)"
+        : "0";
+
+    $where  = [];
+    $params = [];
+    if ($temAnoCampanha)     { $where[] = "c.ano_campanha = :ano";     $params[':ano'] = $filtroAno; }
+    if ($temNumeroCandCoord) { $where[] = "c.numero_candidato = :num"; $params[':num'] = $filtroCand; }
+    if ($filtroCoord > 0)    { $where[] = "c.id = :coord";             $params[':coord'] = $filtroCoord; }
+    if ($filtroLider > 0)    { $where[] = "l.id = :lider";             $params[':lider'] = $filtroLider; }
+    if ($filtroStatus === 'ativas')   $where[] = "l.ativo = 1";
+    if ($filtroStatus === 'inativas') $where[] = "l.ativo = 0";
+    $whereStr = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+    $expL = $temExpectativaLider ? "l.expectativa_votos" : "0";
+
+    $sqlLid = "
+        SELECT l.id, l.nome, l.ativo,
+               $expL AS expectativa_votos,
+               c.id   AS coord_id,
+               c.nome AS coord_nome,
+               c.ativo AS coord_ativo,
+               c.numero_candidato, c.ano_campanha,
+               $subSecoesUrnas AS votos_urnas,
+               $subQtdSecoes   AS qtd_secoes
+        FROM liderancas l
+        INNER JOIN coordenadores c ON c.id = l.coordenador_id
+        $whereStr
+        ORDER BY c.nome, l.nome
+    ";
+    $stmt = $pdo->prepare($sqlLid);
+    $stmt->execute($params);
+    $liderancas = $stmt->fetchAll();
+}
 
 foreach ($liderancas as &$l) {
     $esp = (int)($l['expectativa_votos'] ?? 0);
@@ -262,41 +290,72 @@ unset($l);
 // ============================================================
 // 2) COORDENADORES
 // ============================================================
-$subCoordEsperado = "(SELECT COALESCE(SUM($EXPECT_SQL), 0)
-                        FROM liderancas l
-                       WHERE l.coordenador_id = c.id AND l.ativo = 1)";
-$subCoordUrnas = $temLiderSecao
-    ? "(SELECT COALESCE(SUM(v.`$COL_VOTOS`), 0)
-          FROM votos v
-         WHERE (v.numeroZona, v.numeroSecao) IN (
-                SELECT DISTINCT ls.numeroZona, ls.numeroSecao
-                  FROM lider_secao ls
-                  INNER JOIN liderancas l2 ON l2.id = ls.lider_id
-                 WHERE l2.coordenador_id = c.id AND l2.ativo = 1
-         ))"
-    : "0";
-$subCoordZonas = $temLiderSecao
-    ? "(SELECT COUNT(DISTINCT ls.numeroZona)
-          FROM lider_secao ls
-          INNER JOIN liderancas l3 ON l3.id = ls.lider_id
-         WHERE l3.coordenador_id = c.id)"
-    : "0";
+$coordenadores = [];
+if ($mostrarLista) {
+    $filtroCandVotos = filtroCandVotos('c', $COL_VOTOS, $temTipoVotavel, $temCargoPergunta);
 
-$sqlCoord = "
-    SELECT c.id, c.nome, c.ativo,
-           $CAND_SQL AS candidato,
-           (SELECT COUNT(*) FROM liderancas l WHERE l.coordenador_id = c.id) AS qtd_lid,
-           (SELECT COUNT(*) FROM liderancas l WHERE l.coordenador_id = c.id AND l.ativo = 1) AS qtd_lid_ativ,
-           $subCoordEsperado AS esperado,
-           $subCoordUrnas    AS urnas,
-           $subCoordZonas    AS qtd_zonas
-    FROM coordenadores c
-    $whereCoordStr
-    ORDER BY c.nome
-";
-$stmt = $pdo->prepare($sqlCoord);
-$stmt->execute($paramsCoord);
-$coordenadores = $stmt->fetchAll();
+    // Votos esperados do coordenador = apenas a expectativa dele
+    $cExpectExpr = $temExpectativaCoord ? "c.expectativa_votos" : "0";
+
+    // Votos urnas do coordenador = soma das seções em coordenador_secao
+    if ($temCoordSecao) {
+        $subCoordUrnas = "(SELECT COALESCE(SUM(v.`$COL_VOTOS`), 0)
+                             FROM votos v
+                            WHERE 1=1 $filtroCandVotos
+                              AND (v.numeroZona, v.numeroSecao) IN (
+                                   SELECT cs.numeroZona, cs.numeroSecao
+                                     FROM coordenador_secao cs
+                                    WHERE cs.coordenador_id = c.id
+                              ))";
+        $subCoordZonas = "(SELECT COUNT(DISTINCT cs.numeroZona)
+                             FROM coordenador_secao cs
+                            WHERE cs.coordenador_id = c.id)";
+        $subCoordSecoes = "(SELECT COUNT(*) FROM coordenador_secao cs
+                            WHERE cs.coordenador_id = c.id)";
+    } else {
+        // fallback: usar lider_secao se não existir coordenador_secao
+        $subCoordUrnas = $temLiderSecao
+            ? "(SELECT COALESCE(SUM(v.`$COL_VOTOS`), 0)
+                  FROM votos v
+                 WHERE 1=1 $filtroCandVotos
+                   AND (v.numeroZona, v.numeroSecao) IN (
+                        SELECT DISTINCT ls.numeroZona, ls.numeroSecao
+                          FROM lider_secao ls
+                          INNER JOIN liderancas l2 ON l2.id = ls.lider_id
+                         WHERE l2.coordenador_id = c.id AND l2.ativo = 1
+                   ))"
+            : "0";
+        $subCoordZonas  = "0";
+        $subCoordSecoes = "0";
+    }
+
+    $where  = [];
+    $params = [];
+    if ($temAnoCampanha)     { $where[] = "c.ano_campanha = :ano";     $params[':ano'] = $filtroAno; }
+    if ($temNumeroCandCoord) { $where[] = "c.numero_candidato = :num"; $params[':num'] = $filtroCand; }
+    if ($filtroCoord > 0)    { $where[] = "c.id = :coord";             $params[':coord'] = $filtroCoord; }
+    $whereStr = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+    $sqlCoord = "
+        SELECT c.id, c.nome, c.ativo, c.numero_candidato, c.ano_campanha,
+               $cExpectExpr     AS esperado,
+               $subCoordUrnas   AS urnas,
+               $subCoordZonas   AS qtd_zonas,
+               $subCoordSecoes  AS qtd_secoes,
+               (SELECT COUNT(*) FROM liderancas l WHERE l.coordenador_id = c.id) AS qtd_lid,
+               (SELECT COUNT(*) FROM liderancas l WHERE l.coordenador_id = c.id AND l.ativo = 1) AS qtd_lid_ativ,
+               (SELECT MIN(nomeCandidatoResp) FROM votos v
+                 WHERE v.numero = c.numero_candidato AND v.ano = c.ano_campanha) AS candidato,
+               (SELECT MIN(nomeCargoPerg) FROM votos v
+                 WHERE v.numero = c.numero_candidato AND v.ano = c.ano_campanha) AS candidato_cargo
+        FROM coordenadores c
+        $whereStr
+        ORDER BY c.nome
+    ";
+    $stmt = $pdo->prepare($sqlCoord);
+    $stmt->execute($params);
+    $coordenadores = $stmt->fetchAll();
+}
 
 foreach ($coordenadores as &$c) {
     $esp = (int)$c['esperado'];
@@ -363,89 +422,101 @@ usort($rankCoord, fn($a, $b) => ($b['pct'] ?? 0) <=> ($a['pct'] ?? 0));
 // 5) TOP SEÇÕES
 // ============================================================
 $topSecoes = [];
-if ($temLiderSecao) {
-    $whereTopSec = []; $paramsTopSec = [];
-    if ($temCandidatoCoord && $filtroCand !== '') {
-        $whereTopSec[] = "c.nomeCandidatoResp = :tsCand";
-        $paramsTopSec[':tsCand'] = $filtroCand;
-    }
-    if ($filtroCoord > 0) {
-        $whereTopSec[] = "l.coordenador_id = :fs1";
-        $paramsTopSec[':fs1'] = $filtroCoord;
-    }
-    if ($filtroLider > 0) {
-        $whereTopSec[] = "l.id = :fs2";
-        $paramsTopSec[':fs2'] = $filtroLider;
-    }
-    if ($filtroStatus === 'ativas')   $whereTopSec[] = "l.ativo = 1";
-    if ($filtroStatus === 'inativas') $whereTopSec[] = "l.ativo = 0";
-    $whereTopSecStr = $whereTopSec ? ('AND ' . implode(' AND ', $whereTopSec)) : '';
+if ($temCoordSecao && $mostrarLista) {
+    $filtroCandVotos = filtroCandVotos('c', $COL_VOTOS, $temTipoVotavel, $temCargoPergunta);
+
+    $where  = [];
+    $params = [];
+    if ($temAnoCampanha)     { $where[] = "c.ano_campanha = :ano";     $params[':ano'] = $filtroAno; }
+    if ($temNumeroCandCoord) { $where[] = "c.numero_candidato = :num"; $params[':num'] = $filtroCand; }
+    if ($filtroCoord > 0)    { $where[] = "c.id = :coord";             $params[':coord'] = $filtroCoord; }
+    $whereStr = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
     $sqlSecoes = "
-        SELECT ls.numeroZona, ls.numeroSecao,
-               COUNT(DISTINCT ls.lider_id) AS qtd_lideres,
-               COALESCE(MAX(v.`$COL_VOTOS`), 0) AS votos
-        FROM lider_secao ls
-        INNER JOIN liderancas l ON l.id = ls.lider_id
-        INNER JOIN coordenadores c ON c.id = l.coordenador_id
-        LEFT JOIN votos v
-               ON v.numeroZona  = ls.numeroZona
-              AND v.numeroSecao = ls.numeroSecao
-        WHERE 1=1 $whereTopSecStr
-        GROUP BY ls.numeroZona, ls.numeroSecao
+        SELECT cs.numeroZona, cs.numeroSecao,
+               (SELECT COUNT(DISTINCT ls.lider_id)
+                  FROM lider_secao ls
+                 WHERE ls.coordenador_id = cs.coordenador_id
+                   AND ls.numeroZona = cs.numeroZona
+                   AND ls.numeroSecao = cs.numeroSecao) AS qtd_lideres,
+               (SELECT COALESCE(SUM(v.`$COL_VOTOS`), 0)
+                  FROM votos v
+                 WHERE v.numeroZona = cs.numeroZona
+                   AND v.numeroSecao = cs.numeroSecao
+                   $filtroCandVotos) AS votos
+        FROM coordenador_secao cs
+        INNER JOIN coordenadores c ON c.id = cs.coordenador_id
+        $whereStr
+        GROUP BY cs.coordenador_id, cs.numeroZona, cs.numeroSecao
         ORDER BY votos DESC
         LIMIT 15
     ";
     $stmt = $pdo->prepare($sqlSecoes);
-    $stmt->execute($paramsTopSec);
+    $stmt->execute($params);
     $topSecoes = $stmt->fetchAll();
 }
 
 // ============================================================
-// 6) SEÇÕES DESCOBERTAS
+// 6) SEÇÕES DESCOBERTAS (dentro de coordenador_secao sem lider)
 // ============================================================
 $secoesDescobertas     = [];
 $qtdDescobertasTotal   = 0;
 $votosDescobertosTotal = 0;
 
-if ($temLiderSecao && $filtroLider === 0) {
-    $whereDesc = '';
-    $paramsDesc = [];
-    if ($filtroCoord > 0) {
-        $whereDesc = "AND v.numeroZona IN (
-            SELECT DISTINCT cz.numeroZona FROM coordenador_zona cz
-             WHERE cz.coordenador_id = :fd1)";
-        $paramsDesc[':fd1'] = $filtroCoord;
-    }
+if ($temCoordSecao && $temLiderSecao && $mostrarLista && $filtroLider === 0) {
+    $filtroCandVotos = filtroCandVotos('c', $COL_VOTOS, $temTipoVotavel, $temCargoPergunta);
+
+    $where  = [];
+    $params = [];
+    if ($temAnoCampanha)     { $where[] = "c.ano_campanha = :ano";     $params[':ano'] = $filtroAno; }
+    if ($temNumeroCandCoord) { $where[] = "c.numero_candidato = :num"; $params[':num'] = $filtroCand; }
+    if ($filtroCoord > 0)    { $where[] = "c.id = :coord";             $params[':coord'] = $filtroCoord; }
+    $whereStr = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
     $sqlDescobertas = "
-        SELECT v.numeroZona, v.numeroSecao, v.`$COL_VOTOS` AS votos
-        FROM votos v
-        WHERE NOT EXISTS (
-            SELECT 1 FROM lider_secao ls
-             WHERE ls.numeroZona = v.numeroZona
-               AND ls.numeroSecao = v.numeroSecao
-        )
-        $whereDesc
-        ORDER BY v.`$COL_VOTOS` DESC
+        SELECT cs.numeroZona, cs.numeroSecao,
+               (SELECT COALESCE(SUM(v.`$COL_VOTOS`), 0)
+                  FROM votos v
+                 WHERE v.numeroZona = cs.numeroZona
+                   AND v.numeroSecao = cs.numeroSecao
+                   $filtroCandVotos) AS votos
+        FROM coordenador_secao cs
+        INNER JOIN coordenadores c ON c.id = cs.coordenador_id
+        $whereStr
+          AND NOT EXISTS (
+              SELECT 1 FROM lider_secao ls
+               WHERE ls.coordenador_id = cs.coordenador_id
+                 AND ls.numeroZona = cs.numeroZona
+                 AND ls.numeroSecao = cs.numeroSecao
+          )
+        ORDER BY votos DESC
         LIMIT 20
     ";
     $stmt = $pdo->prepare($sqlDescobertas);
-    $stmt->execute($paramsDesc);
+    $stmt->execute($params);
     $secoesDescobertas = $stmt->fetchAll();
 
     $sqlCountDesc = "
-        SELECT COUNT(*) AS qtd, COALESCE(SUM(v.`$COL_VOTOS`), 0) AS votos
-        FROM votos v
-        WHERE NOT EXISTS (
-            SELECT 1 FROM lider_secao ls
-             WHERE ls.numeroZona = v.numeroZona
-               AND ls.numeroSecao = v.numeroSecao
-        )
-        $whereDesc
+        SELECT COUNT(*) AS qtd,
+               COALESCE(SUM((
+                   SELECT COALESCE(SUM(v.`$COL_VOTOS`), 0)
+                     FROM votos v
+                    WHERE v.numeroZona = cs.numeroZona
+                      AND v.numeroSecao = cs.numeroSecao
+                      $filtroCandVotos
+               )), 0) AS votos
+        FROM coordenador_secao cs
+        INNER JOIN coordenadores c ON c.id = cs.coordenador_id
+        $whereStr
+          AND NOT EXISTS (
+              SELECT 1 FROM lider_secao ls
+               WHERE ls.coordenador_id = cs.coordenador_id
+                 AND ls.numeroZona = cs.numeroZona
+                 AND ls.numeroSecao = cs.numeroSecao
+          )
     ";
     $stmt = $pdo->prepare($sqlCountDesc);
-    $stmt->execute($paramsDesc);
+    $stmt->execute($params);
     $rowDesc = $stmt->fetch();
     $qtdDescobertasTotal   = (int)($rowDesc['qtd']   ?? 0);
     $votosDescobertosTotal = (int)($rowDesc['votos'] ?? 0);
@@ -454,6 +525,12 @@ if ($temLiderSecao && $filtroLider === 0) {
 // ============================================================
 // RÓTULOS DOS FILTROS
 // ============================================================
+$nomeCandFiltro = '';
+if ($filtroCand > 0) {
+    foreach ($listaCandidatos as $cc) {
+        if ((int)$cc['numero'] === $filtroCand) { $nomeCandFiltro = $cc['nome']; break; }
+    }
+}
 $nomeCoordFiltro = '';
 if ($filtroCoord > 0) {
     foreach ($listaCoords as $cc) {
@@ -466,7 +543,7 @@ if ($filtroLider > 0) {
         if ((int)$ll['id'] === $filtroLider) { $nomeLiderFiltro = $ll['nome']; break; }
     }
 }
-$temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $filtroStatus !== 'todas');
+$temFiltro = ($filtroAno > 0 || $filtroCand > 0 || $filtroCoord > 0 || $filtroLider > 0 || $filtroStatus !== 'todas');
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -482,17 +559,11 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
     .info-col .aviso { color:#856404; background:#fff3cd;
         padding:2px 8px; border-radius:6px; font-weight:bold; margin-left:6px; }
 
-    /* ===== Barra de usuário (mesmo modelo das outras páginas) ===== */
     .barra-usuario {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        background: #fff;
-        padding: 10px 16px;
-        border-radius: 8px;
+        display: flex; align-items: center; gap: 12px;
+        background: #fff; padding: 10px 16px; border-radius: 8px;
         box-shadow: 0 1px 3px rgba(0,0,0,.08);
-        margin-bottom: 18px;
-        font-size: 13px;
+        margin-bottom: 18px; font-size: 13px;
     }
     .barra-usuario.super { border-left: 5px solid #6f42c1; }
     .barra-usuario.admin { border-left: 5px solid #0d6efd; }
@@ -507,10 +578,7 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
     .badge-super     { background:#6f42c1; color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; }
     .badge-admin     { background:#0d6efd; color:#fff; padding:2px 10px; border-radius:12px; font-size:11px; }
     .badge-visitante { background:#e9ecef; color:#495057; padding:2px 10px; border-radius:12px; font-size:11px; }
-    .link-debug {
-        margin-left: auto; color: #6c757d;
-        text-decoration: none; font-size: 12px;
-    }
+    .link-debug { margin-left: auto; color: #6c757d; text-decoration: none; font-size: 12px; }
     .link-debug:hover { color: #0d6efd; text-decoration: underline; }
 
     .filtros {
@@ -519,7 +587,7 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
         display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end;
         border-left:5px solid #0069d9;
     }
-    .filtros .campo { display:flex; flex-direction:column; min-width:220px; flex:1; }
+    .filtros .campo { display:flex; flex-direction:column; min-width:200px; flex:1; }
     .filtros .campo label {
         font-size:11px; font-weight:bold; color:#555;
         text-transform:uppercase; letter-spacing:.5px; margin-bottom:4px;
@@ -586,14 +654,14 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
     tr.destaque-ouro  { background:#fffbe6; }
     tr.destaque-prata { background:#f4f4f4; }
     tr.destaque-bronze{ background:#fdf2e3; }
-    .num { text-align:right; }
-    .centro { text-align:center; }
+    .num { text-align:right; } .centro { text-align:center; }
 
     .badge { display:inline-block; padding:2px 8px; border-radius:12px;
              font-size:11px; font-weight:bold; margin:1px 2px; }
     .badge-zona  { background:#f0e6ff; color:#6f42c1; }
     .badge-coord { background:#e6f0fa; color:#0069d9; }
     .badge-cand  { background:#e7d9ff; color:#4a1d96; font-weight:bold; }
+    .badge-ano   { background:#ede7f6; color:#4527a0; }
     .badge-ativo { background:#d4f5dd; color:#1c7a34; }
     .badge-inativo{ background:#f0f0f0; color:#888; }
     .badge-votos { background:#fff0e0; color:#c25b00; }
@@ -627,6 +695,18 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
 
     .medalha { font-size:16px; }
 
+    .lista-secoes {
+        font-family:'Courier New', monospace; font-size:11px; color:#0a3d62;
+        background:#f4f9ff; border-left:3px solid #0069d9; padding:5px 7px;
+        border-radius:4px; max-height:70px; overflow:auto; line-height:1.6;
+        word-break:break-all;
+    }
+    .lista-secoes .tag {
+        display:inline-block; background:#e6f0fa; color:#0069d9;
+        padding:1px 5px; border-radius:3px; margin:1px 3px 1px 0;
+        font-size:10.5px; font-weight:bold;
+    }
+
     .link-voltar { display:inline-block; margin-bottom:15px; color:#0069d9; text-decoration:none; }
     .link-voltar:hover { text-decoration:underline; }
     .aviso { background:#fff3cd; border-left:5px solid #ffc107;
@@ -649,6 +729,9 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
         table { page-break-inside:auto; }
         tr    { page-break-inside:avoid; }
     }
+
+    /* coluna de seções atribuídas */
+    .col-secoes { max-width:280px; }
 </style>
 </head>
 <body>
@@ -671,19 +754,21 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
     <?php else: ?>
         <span class="badge-visitante">👁️ visitante</span>
     <?php endif; ?>
-
-    <a class="link-debug" href="?debug_sessao=1">🔍 ver sessão</a>
 </div>
 
 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
     <div>
         <p class="info-col" style="margin-top:0;">
             Coluna de votos: <strong><?= htmlspecialchars($COL_VOTOS) ?></strong> ·
-            Expectativa em <code>liderancas</code>:
-            <?php if ($COL_EXPECT): ?><strong><?= htmlspecialchars($COL_EXPECT) ?></strong>
+            Expectativa em <code>coordenadores</code>/<code>liderancas</code>:
+            <?php if ($temExpectativaCoord || $temExpectativaLider): ?><strong>ok</strong>
             <?php else: ?><span class="aviso">não existe — usando 0</span><?php endif; ?>
             ·
-            Tabela <code>lider_secao</code>:
+            <code>coordenador_secao</code>:
+            <?php if ($temCoordSecao): ?><strong>existe</strong>
+            <?php else: ?><span class="aviso">não existe</span><?php endif; ?>
+            ·
+            <code>lider_secao</code>:
             <?php if ($temLiderSecao): ?><strong>existe</strong>
             <?php else: ?><span class="aviso">não existe</span><?php endif; ?>
             · Gerado em <?= date('d/m/Y H:i') ?>
@@ -697,28 +782,39 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
      ============================================================ -->
 <form class="filtros no-print" method="get" action="relatorio_desempenho.php" id="form-filtros">
 
-    <?php if ($temCandidatoCoord): ?>
     <div class="campo">
-        <label for="f-cand">Candidato</label>
-        <select name="cand" id="f-cand">
-            <option value="">— Todos os candidatos —</option>
-            <?php foreach ($listaCandidatos as $c): ?>
-                <option value="<?= htmlspecialchars($c) ?>"
-                    <?= $c === $filtroCand ? 'selected' : '' ?>>
-                    <?= htmlspecialchars($c) ?>
+        <label for="f-ano">Ano da campanha *</label>
+        <select name="ano" id="f-ano" required>
+            <option value="0">— Selecione —</option>
+            <?php foreach ($listaAnos as $a): ?>
+                <option value="<?= (int)$a ?>" <?= ((int)$a === $filtroAno) ? 'selected' : '' ?>>
+                    <?= (int)$a ?>
                 </option>
             <?php endforeach; ?>
         </select>
     </div>
-    <?php endif; ?>
 
+    <div class="campo">
+        <label for="f-cand">Candidato *</label>
+        <select name="cand" id="f-cand">
+            <option value="0">— Selecione o ano primeiro —</option>
+            <?php foreach ($listaCandidatos as $c): ?>
+                <option value="<?= (int)$c['numero'] ?>"
+                    <?= ((int)$c['numero'] === $filtroCand) ? 'selected' : '' ?>>
+                    Nº <?= (int)$c['numero'] ?> — <?= htmlspecialchars($c['nome']) ?>
+                    <?= $c['cargo'] ? ' (' . htmlspecialchars($c['cargo']) . ')' : '' ?>
+                </option>
+            <?php endforeach; ?>
+        </select>
+    </div>
+
+    <?php if ($mostrarLista): ?>
     <div class="campo">
         <label for="f-coord">Coordenador</label>
         <select name="coord" id="f-coord">
             <option value="0">— Todos os coordenadores —</option>
             <?php foreach ($listaCoords as $cc): ?>
                 <option value="<?= (int)$cc['id'] ?>"
-                        data-cand="<?= htmlspecialchars($cc['nomeCandidatoResp'] ?? '') ?>"
                     <?= $filtroCoord === (int)$cc['id'] ? 'selected' : '' ?>>
                     <?= htmlspecialchars($cc['nome']) ?>
                     <?= (int)$cc['ativo'] === 0 ? ' (inativo)' : '' ?>
@@ -750,6 +846,7 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
             <option value="inativas" <?= $filtroStatus === 'inativas' ? 'selected' : '' ?>>Só inativas</option>
         </select>
     </div>
+    <?php endif; ?>
 
     <div class="acoes">
         <button type="submit" class="btn-filtrar">🔍 Filtrar</button>
@@ -762,35 +859,49 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
 <div class="no-print" style="margin-bottom:16px;">
     <span style="font-size:12px; color:#666; margin-right:8px;">Filtros ativos:</span>
 
-    <?php if ($filtroCand !== ''): ?>
+    <?php if ($filtroAno > 0): ?>
         <span class="badge-filtro">
-            🗳 <?= htmlspecialchars($filtroCand) ?>
-            <a class="x" href="?<?= http_build_query(['cand' => '', 'coord' => 0, 'lider' => 0, 'status' => $filtroStatus]) ?>">×</a>
+            📅 <?= (int)$filtroAno ?>
+            <a class="x" href="?<?= http_build_query(['ano' => 0, 'cand' => 0, 'coord' => 0, 'lider' => 0, 'status' => 'todas']) ?>">×</a>
+        </span>
+    <?php endif; ?>
+
+    <?php if ($filtroCand > 0): ?>
+        <span class="badge-filtro">
+            🗳 Nº <?= (int)$filtroCand ?> — <?= htmlspecialchars($nomeCandFiltro) ?>
+            <a class="x" href="?<?= http_build_query(['ano' => $filtroAno, 'cand' => 0, 'coord' => 0, 'lider' => 0, 'status' => $filtroStatus]) ?>">×</a>
         </span>
     <?php endif; ?>
 
     <?php if ($filtroCoord > 0): ?>
         <span class="badge-filtro">
             👔 <?= htmlspecialchars($nomeCoordFiltro) ?>
-            <a class="x" href="?<?= http_build_query(['cand' => $filtroCand, 'coord' => 0, 'lider' => $filtroLider, 'status' => $filtroStatus]) ?>">×</a>
+            <a class="x" href="?<?= http_build_query(['ano' => $filtroAno, 'cand' => $filtroCand, 'coord' => 0, 'lider' => 0, 'status' => $filtroStatus]) ?>">×</a>
         </span>
     <?php endif; ?>
 
     <?php if ($filtroLider > 0): ?>
         <span class="badge-filtro">
             👤 <?= htmlspecialchars($nomeLiderFiltro) ?>
-            <a class="x" href="?<?= http_build_query(['cand' => $filtroCand, 'coord' => $filtroCoord, 'lider' => 0, 'status' => $filtroStatus]) ?>">×</a>
+            <a class="x" href="?<?= http_build_query(['ano' => $filtroAno, 'cand' => $filtroCand, 'coord' => $filtroCoord, 'lider' => 0, 'status' => $filtroStatus]) ?>">×</a>
         </span>
     <?php endif; ?>
 
     <?php if ($filtroStatus !== 'todas'): ?>
         <span class="badge-filtro">
             <?= $filtroStatus === 'ativas' ? '🟢 Só ativas' : '⚪ Só inativas' ?>
-            <a class="x" href="?<?= http_build_query(['cand' => $filtroCand, 'coord' => $filtroCoord, 'lider' => $filtroLider, 'status' => 'todas']) ?>">×</a>
+            <a class="x" href="?<?= http_build_query(['ano' => $filtroAno, 'cand' => $filtroCand, 'coord' => $filtroCoord, 'lider' => $filtroLider, 'status' => 'todas']) ?>">×</a>
         </span>
     <?php endif; ?>
 </div>
 <?php endif; ?>
+
+<?php if (!$mostrarLista): ?>
+    <div class="aviso">
+        ⚠️ Selecione o <strong>ano da campanha</strong> e o <strong>candidato</strong>
+        para visualizar o relatório.
+    </div>
+<?php else: ?>
 
 <!-- ============================================================
      KPIs GERAIS
@@ -858,9 +969,10 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
     <thead>
         <tr>
             <th style="width:50px;" class="centro">#</th>
-            <?php if ($temCandidatoCoord): ?><th>Candidato</th><?php endif; ?>
+            <th>Candidato</th>
             <th>Coordenador</th>
             <th class="centro" style="width:70px;">Zonas</th>
+            <th class="centro" style="width:70px;">Seções</th>
             <th class="centro" style="width:70px;">Líderes</th>
             <th class="num" style="width:100px;">Esperado</th>
             <th class="num" style="width:100px;">Urnas</th>
@@ -885,15 +997,19 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
             ?>
             <tr class="<?= $linhaCls ?>">
                 <td class="centro"><span class="medalha"><?= $med ?></span></td>
-                <?php if ($temCandidatoCoord): ?>
-                    <td>
-                        <?php if (!empty($c['candidato'])): ?>
-                            <span class="badge badge-cand"><?= htmlspecialchars($c['candidato']) ?></span>
-                        <?php else: ?><span class="vazio">—</span><?php endif; ?>
-                    </td>
-                <?php endif; ?>
+                <td>
+                    <span class="badge badge-ano"><?= (int)$c['ano_campanha'] ?></span>
+                    <span class="badge badge-cand">Nº <?= (int)$c['numero_candidato'] ?></span>
+                    <?php if (!empty($c['candidato'])): ?>
+                        <div style="font-size:11px;color:#666;margin-top:3px;">
+                            <?= htmlspecialchars($c['candidato']) ?>
+                            <?= $c['candidato_cargo'] ? ' · ' . htmlspecialchars($c['candidato_cargo']) : '' ?>
+                        </div>
+                    <?php endif; ?>
+                </td>
                 <td><strong><?= htmlspecialchars($c['nome']) ?></strong></td>
                 <td class="centro"><?= fmtNum($c['qtd_zonas']) ?></td>
+                <td class="centro"><?= fmtNum($c['qtd_secoes']) ?></td>
                 <td class="centro"><?= fmtNum($c['qtd_lid_ativ']) ?></td>
                 <td class="num"><span class="badge badge-votos"><?= fmtNum($c['esperado']) ?></span></td>
                 <td class="num"><span class="badge badge-urnas"><?= fmtNum($c['urnas']) ?></span></td>
@@ -914,21 +1030,11 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
                     </span>
                 </td>
                 <td class="centro" style="font-size:11px;">
-                    <?php if ((int)$c['qtd_acima'] > 0): ?>
-                        <span class="badge badge-pos">▲<?= (int)$c['qtd_acima'] ?></span>
-                    <?php endif; ?>
-                    <?php if ((int)$c['qtd_meta'] > 0): ?>
-                        <span class="badge badge-pos">✔<?= (int)$c['qtd_meta'] ?></span>
-                    <?php endif; ?>
-                    <?php if ((int)$c['qtd_quase'] > 0): ?>
-                        <span class="badge badge-pct-med">≈<?= (int)$c['qtd_quase'] ?></span>
-                    <?php endif; ?>
-                    <?php if ((int)$c['qtd_abaixo'] > 0): ?>
-                        <span class="badge badge-neg">▼<?= (int)$c['qtd_abaixo'] ?></span>
-                    <?php endif; ?>
-                    <?php if ((int)$c['qtd_sem'] > 0): ?>
-                        <span class="badge badge-zero">—<?= (int)$c['qtd_sem'] ?></span>
-                    <?php endif; ?>
+                    <?php if ((int)$c['qtd_acima'] > 0): ?><span class="badge badge-pos">▲<?= (int)$c['qtd_acima'] ?></span><?php endif; ?>
+                    <?php if ((int)$c['qtd_meta'] > 0): ?><span class="badge badge-pos">✔<?= (int)$c['qtd_meta'] ?></span><?php endif; ?>
+                    <?php if ((int)$c['qtd_quase'] > 0): ?><span class="badge badge-pct-med">≈<?= (int)$c['qtd_quase'] ?></span><?php endif; ?>
+                    <?php if ((int)$c['qtd_abaixo'] > 0): ?><span class="badge badge-neg">▼<?= (int)$c['qtd_abaixo'] ?></span><?php endif; ?>
+                    <?php if ((int)$c['qtd_sem'] > 0): ?><span class="badge badge-zero">—<?= (int)$c['qtd_sem'] ?></span><?php endif; ?>
                 </td>
             </tr>
         <?php endforeach; ?>
@@ -1006,14 +1112,14 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
 <?php endif; ?>
 
 <!-- ============================================================
-     SEÇÕES MAIS FORTES vs. DESCOBERTAS
+     TOP SEÇÕES vs. DESCOBERTAS
      ============================================================ -->
 <div class="grid-2">
 
     <div class="card">
         <h3>🔥 Top 15 seções (mais votos)</h3>
-        <?php if (!$temLiderSecao): ?>
-            <p class="vazio">Tabela <code>lider_secao</code> não existe.</p>
+        <?php if (!$temCoordSecao): ?>
+            <p class="vazio">Tabela <code>coordenador_secao</code> não existe.</p>
         <?php elseif (!$topSecoes): ?>
             <p class="vazio">Nenhuma seção vinculada para os filtros selecionados.</p>
         <?php else: ?>
@@ -1030,14 +1136,9 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
                     <?php foreach ($topSecoes as $i => $s): ?>
                         <tr>
                             <td class="centro"><?= $i + 1 ?></td>
-                            <td>
-                                <span class="badge badge-zona">Zona <?= (int)$s['numeroZona'] ?></span>
-                                <strong>Seção <?= (int)$s['numeroSecao'] ?></strong>
-                            </td>
+                            <td><span class="badge badge-zona"><?= fmtSecao((int)$s['numeroZona'], (int)$s['numeroSecao']) ?></span></td>
                             <td class="centro"><?= (int)$s['qtd_lideres'] ?></td>
-                            <td class="num">
-                                <span class="badge badge-urnas"><?= fmtNum($s['votos']) ?></span>
-                            </td>
+                            <td class="num"><span class="badge badge-urnas"><?= fmtNum($s['votos']) ?></span></td>
                         </tr>
                     <?php endforeach; ?>
                 </tbody>
@@ -1047,18 +1148,18 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
 
     <div class="card">
         <h3>⚠ Seções descobertas (sem liderança)</h3>
-        <?php if (!$temLiderSecao): ?>
-            <p class="vazio">Tabela <code>lider_secao</code> não existe.</p>
+        <?php if (!$temCoordSecao || !$temLiderSecao): ?>
+            <p class="vazio">Tabelas <code>coordenador_secao</code> / <code>lider_secao</code> não existem.</p>
         <?php elseif ($filtroLider > 0): ?>
             <p class="vazio">Esta análise não se aplica quando há um líder específico selecionado.</p>
         <?php else: ?>
             <p style="margin:0 0 10px; font-size:12px; color:#666;">
                 <strong><?= fmtNum($qtdDescobertasTotal) ?></strong> seções ·
                 <strong><?= fmtNum($votosDescobertosTotal) ?></strong> votos sem cobertura
-                <?= $filtroCoord > 0 ? ' (zonas do coordenador filtrado)' : '' ?>
+                <?= $filtroCoord > 0 ? ' (coordenador filtrado)' : '' ?>
             </p>
             <?php if (!$secoesDescobertas): ?>
-                <p class="vazio">Parabéns! Todas as seções têm liderança cadastrada.</p>
+                <p class="vazio">Parabéns! Todas as seções do coordenador têm liderança cadastrada.</p>
             <?php else: ?>
                 <table>
                     <thead>
@@ -1072,13 +1173,8 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
                         <?php foreach ($secoesDescobertas as $i => $s): ?>
                             <tr>
                                 <td class="centro"><?= $i + 1 ?></td>
-                                <td>
-                                    <span class="badge badge-zona">Zona <?= (int)$s['numeroZona'] ?></span>
-                                    <strong>Seção <?= (int)$s['numeroSecao'] ?></strong>
-                                </td>
-                                <td class="num">
-                                    <span class="badge badge-urnas"><?= fmtNum($s['votos']) ?></span>
-                                </td>
+                                <td><span class="badge badge-zona"><?= fmtSecao((int)$s['numeroZona'], (int)$s['numeroSecao']) ?></span></td>
+                                <td class="num"><span class="badge badge-urnas"><?= fmtNum($s['votos']) ?></span></td>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
@@ -1090,16 +1186,17 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
 </div>
 
 <!-- ============================================================
-     TABELA ANALÍTICA
+     ANÁLISE DETALHADA POR COORDENADOR
      ============================================================ -->
 <h2 class="sec">📋 Análise detalhada por coordenador</h2>
 
 <table>
     <thead>
         <tr>
-            <?php if ($temCandidatoCoord): ?><th>Candidato</th><?php endif; ?>
+            <th>Candidato</th>
             <th>Coordenador</th>
             <th class="centro" style="width:60px;">Status</th>
+            <th class="centro" style="width:70px;">Seções</th>
             <th class="centro" style="width:70px;">Líderes</th>
             <th class="num" style="width:100px;">Esperado</th>
             <th class="num" style="width:100px;">Urnas</th>
@@ -1114,26 +1211,29 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
     </thead>
     <tbody>
         <?php if (!$coordenadores): ?>
-            <tr><td colspan="<?= $temCandidatoCoord ? 13 : 12 ?>" class="centro vazio" style="padding:20px;">
+            <tr><td colspan="14" class="centro vazio" style="padding:20px;">
                 Nenhum coordenador para os filtros selecionados.
             </td></tr>
         <?php else: ?>
             <?php foreach ($coordenadores as $c): ?>
                 <?php $dif = (int)$c['diferenca']; ?>
                 <tr>
-                    <?php if ($temCandidatoCoord): ?>
-                        <td>
-                            <?php if (!empty($c['candidato'])): ?>
-                                <span class="badge badge-cand"><?= htmlspecialchars($c['candidato']) ?></span>
-                            <?php else: ?><span class="vazio">—</span><?php endif; ?>
-                        </td>
-                    <?php endif; ?>
+                    <td>
+                        <span class="badge badge-ano"><?= (int)$c['ano_campanha'] ?></span>
+                        <span class="badge badge-cand">Nº <?= (int)$c['numero_candidato'] ?></span>
+                        <?php if (!empty($c['candidato'])): ?>
+                            <div style="font-size:11px;color:#666;margin-top:3px;">
+                                <?= htmlspecialchars($c['candidato']) ?>
+                            </div>
+                        <?php endif; ?>
+                    </td>
                     <td><strong><?= htmlspecialchars($c['nome']) ?></strong></td>
                     <td class="centro">
                         <?= (int)$c['ativo'] === 1
                             ? '<span class="badge badge-ativo">Ativo</span>'
                             : '<span class="badge badge-inativo">Inativo</span>' ?>
                     </td>
+                    <td class="centro"><?= fmtNum($c['qtd_secoes']) ?></td>
                     <td class="centro"><?= fmtNum($c['qtd_lid_ativ']) ?></td>
                     <td class="num"><span class="badge badge-votos"><?= fmtNum($c['esperado']) ?></span></td>
                     <td class="num"><span class="badge badge-urnas"><?= fmtNum($c['urnas']) ?></span></td>
@@ -1157,7 +1257,7 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
                 </tr>
             <?php endforeach; ?>
             <tr class="linha-total">
-                <td colspan="<?= $temCandidatoCoord ? 4 : 3 ?>" style="text-align:right;">Total geral</td>
+                <td colspan="5" style="text-align:right;">Total geral</td>
                 <td class="num"><?= fmtNum($tot['esperado']) ?></td>
                 <td class="num"><?= fmtNum($tot['urnas']) ?></td>
                 <td class="num"><?= ($tot['diferenca'] > 0 ? '+' : '') . fmtNum($tot['diferenca']) ?></td>
@@ -1168,6 +1268,67 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
                 <td class="centro"><?= fmtNum($tot['abaixo']) ?></td>
                 <td class="centro"><?= fmtNum($tot['sem']) ?></td>
             </tr>
+        <?php endif; ?>
+    </tbody>
+</table>
+
+<!-- ============================================================
+     DETALHAMENTO POR LIDERANÇA
+     ============================================================ -->
+<h2 class="sec">👥 Detalhamento por liderança</h2>
+
+<table>
+    <thead>
+        <tr>
+            <th>Liderança</th>
+            <th>Coordenador</th>
+            <th class="centro" style="width:70px;">Status</th>
+            <th class="centro" style="width:80px;">Seções</th>
+            <th class="num" style="width:100px;">Esperado</th>
+            <th class="num" style="width:100px;">Urnas</th>
+            <th class="num" style="width:90px;">Diferença</th>
+            <th class="centro" style="width:80px;">%</th>
+            <th class="centro" style="width:110px;">Situação</th>
+        </tr>
+    </thead>
+    <tbody>
+        <?php if (!$liderancas): ?>
+            <tr><td colspan="9" class="centro vazio" style="padding:20px;">
+                Nenhuma liderança para os filtros selecionados.
+            </td></tr>
+        <?php else: ?>
+            <?php foreach ($liderancas as $l): ?>
+                <?php $dif = (int)$l['diferenca']; ?>
+                <tr>
+                    <td><strong><?= htmlspecialchars($l['nome']) ?></strong></td>
+                    <td><span class="badge badge-coord"><?= htmlspecialchars($l['coord_nome']) ?></span></td>
+                    <td class="centro">
+                        <?= (int)$l['ativo'] === 1
+                            ? '<span class="badge badge-ativo">Ativa</span>'
+                            : '<span class="badge badge-inativo">Inativa</span>' ?>
+                    </td>
+                    <td class="centro"><?= fmtNum($l['qtd_secoes']) ?></td>
+                    <td class="num"><span class="badge badge-votos"><?= fmtNum($l['esperado']) ?></span></td>
+                    <td class="num"><span class="badge badge-urnas"><?= fmtNum($l['urnas']) ?></span></td>
+                    <td class="num">
+                        <span class="badge <?= $dif > 0 ? 'badge-pos' : ($dif < 0 ? 'badge-neg' : 'badge-zero') ?>">
+                            <?= ($dif > 0 ? '+' : '') . fmtNum($dif) ?>
+                        </span>
+                    </td>
+                    <td class="centro">
+                        <?php if ($l['pct'] !== null): ?>
+                            <span class="badge <?= $l['pct'] >= 100 ? 'badge-pct-ok' : ($l['pct'] >= 70 ? 'badge-pct-med' : 'badge-pct-ruim') ?>">
+                                <?= fmtPct($l['pct']) ?>
+                            </span>
+                        <?php else: ?><span class="vazio">—</span><?php endif; ?>
+                    </td>
+                    <td class="centro">
+                        <span class="sit <?= $l['situacao']['classe'] ?>">
+                            <span class="ico"><?= $l['situacao']['icone'] ?></span><?= $l['situacao']['rotulo'] ?>
+                        </span>
+                    </td>
+                </tr>
+            <?php endforeach; ?>
         <?php endif; ?>
     </tbody>
 </table>
@@ -1187,7 +1348,7 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
     <tbody>
         <tr><td><span class="sit sit-acima"><span class="ico">▲</span>Acima</span></td>
             <td>Urnas <strong>maior</strong> que a meta</td>
-            <td>A liderança superou a expectativa de votos</td></tr>
+            <td>A liderança/coordenador superou a expectativa de votos</td></tr>
         <tr><td><span class="sit sit-meta"><span class="ico">✔</span>Na meta</span></td>
             <td>Urnas <strong>igual</strong> à meta</td>
             <td>Atingiu exatamente o esperado</td></tr>
@@ -1207,86 +1368,83 @@ $temFiltro = ($filtroCand !== '' || $filtroCoord > 0 || $filtroLider > 0 || $fil
     Relatório gerado automaticamente · <?= date('d/m/Y \à\s H:i') ?>
 </p>
 
+<?php endif; ?>
+
 <script>
     // ============================================================
-    // Cascata: Candidato → Coordenador → Liderança
+    // Cascata: Ano → Candidato → Coordenador → Liderança
     // ============================================================
     (function () {
+        const selAno   = document.getElementById('f-ano');
         const selCand  = document.getElementById('f-cand');
         const selCoord = document.getElementById('f-coord');
         const selLider = document.getElementById('f-lider');
 
-        const opcoesCoord = Array.from(selCoord.querySelectorAll('option'))
+        // guarda opções originais de coordenadores e lideranças
+        const opcoesCoord = selCoord ? Array.from(selCoord.querySelectorAll('option'))
             .filter(op => op.value !== '0')
-            .map(op => ({
-                value: op.value,
-                text:  op.textContent,
-                cand:  op.dataset.cand || ''
-            }));
+            .map(op => ({ value: op.value, text: op.textContent })) : [];
 
-        const opcoesLider = Array.from(selLider.querySelectorAll('option'))
+        const opcoesLider = selLider ? Array.from(selLider.querySelectorAll('option'))
             .filter(op => op.value !== '0')
-            .map(op => ({
-                value: op.value,
-                text:  op.textContent,
-                coord: op.dataset.coord
-            }));
+            .map(op => ({ value: op.value, text: op.textContent, coord: op.dataset.coord })) : [];
 
-        function repopularCoords() {
-            if (!selCand) return;
-            const candSel = selCand.value;
-            const coordAtual = selCoord.value;
-
-            selCoord.innerHTML = '<option value="0">— Todos os coordenadores —</option>';
-            opcoesCoord.forEach(o => {
-                if (candSel && o.cand !== candSel) return;
-                const opt = document.createElement('option');
-                opt.value = o.value;
-                opt.textContent = o.text;
-                opt.dataset.cand = o.cand;
-                if (o.value === coordAtual) opt.selected = true;
-                selCoord.appendChild(opt);
+        // Ao trocar o ANO: recarrega a página (para carregar os candidatos corretos)
+        if (selAno) {
+            selAno.addEventListener('change', function () {
+                const url = new URL(window.location.href);
+                url.searchParams.set('ano', this.value);
+                url.searchParams.set('cand', '0');
+                url.searchParams.set('coord', '0');
+                url.searchParams.set('lider', '0');
+                url.searchParams.set('status', 'todas');
+                window.location.href = url.toString();
             });
-            if (coordAtual !== '0'
-                && !selCoord.querySelector(`option[value="${coordAtual}"]`)) {
-                selCoord.value = '0';
-            }
-            repopularLideres();
         }
 
-        function repopularLideres() {
-            const coordSel = selCoord.value;
-            const liderAtual = selLider.value;
-
-            selLider.innerHTML = '<option value="0">— Todas as lideranças —</option>';
-            opcoesLider.forEach(o => {
-                if (coordSel !== '0' && o.coord !== coordSel) return;
-                const opt = document.createElement('option');
-                opt.value = o.value;
-                opt.textContent = o.text;
-                opt.dataset.coord = o.coord;
-                if (o.value === liderAtual) opt.selected = true;
-                selLider.appendChild(opt);
+        // Ao trocar o CANDIDATO: recarrega a página (para carregar coordenadores/lideranças)
+        if (selCand) {
+            selCand.addEventListener('change', function () {
+                const url = new URL(window.location.href);
+                url.searchParams.set('cand', this.value);
+                url.searchParams.set('coord', '0');
+                url.searchParams.set('lider', '0');
+                window.location.href = url.toString();
             });
-            if (liderAtual !== '0'
-                && !selLider.querySelector(`option[value="${liderAtual}"]`)) {
-                selLider.value = '0';
-            }
         }
 
-        if (selCand) selCand.addEventListener('change', repopularCoords);
-        selCoord.addEventListener('change', repopularLideres);
+        // Ao trocar o COORDENADOR: filtra lideranças (client-side)
+        if (selCoord && selLider) {
+            selCoord.addEventListener('change', function () {
+                const coordSel = this.value;
+                const liderAtual = selLider.value;
 
-        selLider.addEventListener('change', function () {
-            const opt = this.options[this.selectedIndex];
-            if (!opt) return;
-            const coord = opt.dataset.coord;
-            if (coord && coord !== '0') {
-                selCoord.value = coord;
-                repopularLideres();
-                selLider.value = opt.value;
-            }
-        });
+                selLider.innerHTML = '<option value="0">— Todas as lideranças —</option>';
+                opcoesLider.forEach(o => {
+                    if (coordSel !== '0' && o.coord !== coordSel) return;
+                    const opt = document.createElement('option');
+                    opt.value = o.value;
+                    opt.textContent = o.text;
+                    opt.dataset.coord = o.coord;
+                    if (o.value === liderAtual) opt.selected = true;
+                    selLider.appendChild(opt);
+                });
+                if (liderAtual !== '0'
+                    && !selLider.querySelector(`option[value="${liderAtual}"]`)) {
+                    selLider.value = '0';
+                }
+            });
+
+            // Ao trocar a LIDERANÇA: seleciona o coordenador dela
+            selLider.addEventListener('change', function () {
+                const opt = this.options[this.selectedIndex];
+                if (!opt) return;
+                const coord = opt.dataset.coord;
+                if (coord && coord !== '0') {
+                    selCoord.value = coord;
+                }
+            });
+        }
     })();
 </script>
 

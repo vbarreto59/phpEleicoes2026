@@ -13,7 +13,7 @@
 //    - PHP 8.5 e superiores  → usa Pdo\Mysql::ATTR_INIT_COMMAND
 //  A escolha é feita em tempo de execução, sem warnings.
 // ============================================================
-
+date_default_timezone_set('America/Sao_Paulo');
 // ============================================================
 //  CONFIGURAÇÕES POR AMBIENTE
 // ============================================================

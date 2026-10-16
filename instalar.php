@@ -1,6 +1,7 @@
 <?php
 // instalar.php — Cria a tabela usuarios e os usuários iniciais.
 // Rode UMA vez e depois APAGUE este arquivo.
+date_default_timezone_set('America/Sao_Paulo');
 
 $DB_HOST = 'localhost';
 $DB_NAME = 'eleicoes';

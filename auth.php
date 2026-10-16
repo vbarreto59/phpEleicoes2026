@@ -4,6 +4,7 @@
 // Inclua SEMPRE na PRIMEIRA linha de qualquer página protegida:
 //     require_once __DIR__ . '/auth.php';
 // ============================================================
+date_default_timezone_set('America/Sao_Paulo');
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();

@@ -5,6 +5,7 @@
 // ------------------------------------------------------------
 require_once __DIR__ . '/conn_eleicoes.php';
 require_once __DIR__ . '/auth.php';
+date_default_timezone_set('America/Sao_Paulo');
 
 // Nome deste arquivo — usado nas chamadas AJAX e no link "Limpar"
 $nomeArquivo = basename(__FILE__);
