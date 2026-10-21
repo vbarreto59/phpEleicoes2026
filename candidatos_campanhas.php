@@ -59,9 +59,6 @@ $temNumero = in_array('numero', $colunasVotos, true);
 
 // ------------------------------------------------------------
 // Detectar coluna de seção
-//   1) tenta nomes conhecidos exatos
-//   2) fallback: qualquer coluna que contenha "secao" (case-insensitive,
-//      com normalização de acentos)
 // ------------------------------------------------------------
 $candidatasSecao = [
     'numeroSecao','numero_secao','secao','nrSecao','NR_SECAO',
@@ -258,168 +255,262 @@ if ($regiao !== '') {
 
 $where = $filtros ? 'WHERE ' . implode(' AND ', $filtros) : '';
 
-$colAnoSelect = $temAno ? "v.ano," : "";
-$colAnoGroup  = $temAno ? "v.ano," : "";
-$colNumeroSelect = $temNumero ? "MAX(v.numero) AS numero," : "";
+// ============================================================
+// REGRA DE EXIBIÇÃO CONDICIONAL
+//   A página SEMPRE inicia em branco.
+//   Só exibe dados quando:
+//     - coluna "ano" existe: ano E candidato preenchidos
+//     - coluna "ano" ausente: apenas candidato preenchido
+// ============================================================
+$temAlgumFiltro = ($temAno && $ano !== '') || $cargo !== '' || $candidato !== '' || $regiao !== '';
 
-switch ($ordem) {
-    case 'nome':  $orderBy = "v.nomeCandidatoResp ASC, v.nomeCargoPerg ASC"; break;
-    case 'cargo': $orderBy = "v.nomeCargoPerg ASC, total DESC"; break;
-    case 'ano':   $orderBy = $temAno ? "v.ano DESC, total DESC" : "total DESC"; break;
-    case 'votos':
-    default:      $orderBy = $temAno ? "v.ano DESC, total DESC" : "total DESC"; break;
+if (!$temAno) {
+    // Sem coluna "ano": basta o candidato
+    $temFiltrosObrigatorios = ($candidato !== '');
+} else {
+    $temFiltrosObrigatorios = ($ano !== '' && $candidato !== '');
 }
 
-$sqlCampanhas = "
-    SELECT
-        $colAnoSelect
-        $colNumeroSelect
-        v.nomeCandidatoResp AS candidato,
-        v.nomeCargoPerg     AS cargo,
-        SUM(v.qtdVotos)     AS total,
-        COUNT(DISTINCT v.nomeMunicipio) AS qtd_municipios,
-        COUNT(DISTINCT v.numeroZona)    AS qtd_zonas
-    FROM votos v
-    $where
-    GROUP BY $colAnoGroup v.nomeCandidatoResp, v.nomeCargoPerg
-    ORDER BY $orderBy
-";
-$stmt = $pdo->prepare($sqlCampanhas);
-$stmt->execute($params);
-$campanhas = $stmt->fetchAll();
+$mostrarDados = $temFiltrosObrigatorios;
 
-$totalVotosFiltro = 0;
-foreach ($campanhas as $c) $totalVotosFiltro += (int)$c['total'];
+// ------------------------------------------------------------
+// Defaults (para quando a exibição estiver bloqueada)
+// ------------------------------------------------------------
+$campanhas            = [];
+$porRegiao            = [];
+$municipiosDetalhado  = [];
+$rankingCandidatos    = [];
+$rankingCargos        = [];
+$totalCandidatos      = 0;
+$totalCargos          = 0;
+$totalGeralFiltro     = 0;
+$totalAnos            = 0;
+$totalMunicipios      = 0;
+$totalZonas           = 0;
+$totalCampanhasFiltro = 0;
+$totalCandidatosBanco = 0;
+$totalCargosBanco     = 0;
+$totalGeralBanco      = 0;
+$totalAnosBanco       = 0;
+$totalCampanhasBanco  = 0;
+$pctFiltroBanco       = 0;
+$maxVotosRegiao       = 0;
+$totalVotosFiltro     = 0;
 
 // ============================================================
-// KPIs filtrados
+// CONSULTAS PESADAS (só executam se for para exibir)
 // ============================================================
-$sqlKpiFiltro = "
-    SELECT
-        COUNT(DISTINCT v.nomeCandidatoResp) AS total_candidatos,
-        COUNT(DISTINCT v.nomeCargoPerg)     AS total_cargos,
-        SUM(v.qtdVotos)                     AS total_geral,
-        " . ($temAno ? "COUNT(DISTINCT v.ano)" : "0") . " AS total_anos,
-        COUNT(DISTINCT v.nomeMunicipio)     AS total_municipios,
-        COUNT(DISTINCT v.numeroZona)        AS total_zonas
-    FROM votos v
-    $where
-";
-$stmt = $pdo->prepare($sqlKpiFiltro);
-$stmt->execute($params);
-$rowKpiFiltro = $stmt->fetch();
+if ($mostrarDados) {
 
-$totalCandidatos  = (int)($rowKpiFiltro['total_candidatos']  ?? 0);
-$totalCargos      = (int)($rowKpiFiltro['total_cargos']      ?? 0);
-$totalGeralFiltro = (int)($rowKpiFiltro['total_geral']       ?? 0);
-$totalAnos        = (int)($rowKpiFiltro['total_anos']        ?? 0);
-$totalMunicipios  = (int)($rowKpiFiltro['total_municipios']  ?? 0);
-$totalZonas       = (int)($rowKpiFiltro['total_zonas']       ?? 0);
+    $colAnoSelect    = $temAno ? "v.ano," : "";
+    $colAnoGroup     = $temAno ? "v.ano," : "";
+    $colNumeroSelect = $temNumero ? "MAX(v.numero) AS numero," : "";
 
-if ($temAno) {
-    $sqlCampCount = "SELECT COUNT(*) FROM (
-        SELECT DISTINCT v.nomeCandidatoResp, v.nomeCargoPerg, v.ano
+    switch ($ordem) {
+        case 'nome':  $orderBy = "v.nomeCandidatoResp ASC, v.nomeCargoPerg ASC"; break;
+        case 'cargo': $orderBy = "v.nomeCargoPerg ASC, total DESC"; break;
+        case 'ano':   $orderBy = $temAno ? "v.ano DESC, total DESC" : "total DESC"; break;
+        case 'votos':
+        default:      $orderBy = $temAno ? "v.ano DESC, total DESC" : "total DESC"; break;
+    }
+
+    $sqlCampanhas = "
+        SELECT
+            $colAnoSelect
+            $colNumeroSelect
+            v.nomeCandidatoResp AS candidato,
+            v.nomeCargoPerg     AS cargo,
+            SUM(v.qtdVotos)     AS total,
+            COUNT(DISTINCT v.nomeMunicipio) AS qtd_municipios,
+            COUNT(DISTINCT v.numeroZona)    AS qtd_zonas
         FROM votos v
         $where
-    ) t";
-} else {
-    $sqlCampCount = "SELECT COUNT(*) FROM (
-        SELECT DISTINCT v.nomeCandidatoResp, v.nomeCargoPerg
+        GROUP BY $colAnoGroup v.nomeCandidatoResp, v.nomeCargoPerg
+        ORDER BY $orderBy
+    ";
+    $stmt = $pdo->prepare($sqlCampanhas);
+    $stmt->execute($params);
+    $campanhas = $stmt->fetchAll();
+
+    $totalVotosFiltro = 0;
+    foreach ($campanhas as $c) $totalVotosFiltro += (int)$c['total'];
+
+    // ---- KPIs filtrados ----
+    $sqlKpiFiltro = "
+        SELECT
+            COUNT(DISTINCT v.nomeCandidatoResp) AS total_candidatos,
+            COUNT(DISTINCT v.nomeCargoPerg)     AS total_cargos,
+            SUM(v.qtdVotos)                     AS total_geral,
+            " . ($temAno ? "COUNT(DISTINCT v.ano)" : "0") . " AS total_anos,
+            COUNT(DISTINCT v.nomeMunicipio)     AS total_municipios,
+            COUNT(DISTINCT v.numeroZona)        AS total_zonas
         FROM votos v
         $where
-    ) t";
+    ";
+    $stmt = $pdo->prepare($sqlKpiFiltro);
+    $stmt->execute($params);
+    $rowKpiFiltro = $stmt->fetch();
+
+    $totalCandidatos  = (int)($rowKpiFiltro['total_candidatos']  ?? 0);
+    $totalCargos      = (int)($rowKpiFiltro['total_cargos']      ?? 0);
+    $totalGeralFiltro = (int)($rowKpiFiltro['total_geral']       ?? 0);
+    $totalAnos        = (int)($rowKpiFiltro['total_anos']        ?? 0);
+    $totalMunicipios  = (int)($rowKpiFiltro['total_municipios']  ?? 0);
+    $totalZonas       = (int)($rowKpiFiltro['total_zonas']       ?? 0);
+
+    if ($temAno) {
+        $sqlCampCount = "SELECT COUNT(*) FROM (
+            SELECT DISTINCT v.nomeCandidatoResp, v.nomeCargoPerg, v.ano
+            FROM votos v
+            $where
+        ) t";
+    } else {
+        $sqlCampCount = "SELECT COUNT(*) FROM (
+            SELECT DISTINCT v.nomeCandidatoResp, v.nomeCargoPerg
+            FROM votos v
+            $where
+        ) t";
+    }
+    $stmt = $pdo->prepare($sqlCampCount);
+    $stmt->execute($params);
+    $totalCampanhasFiltro = (int)$stmt->fetchColumn();
+
+    // ---- KPIs globais (referência) ----
+    $colCountAno = $temAno ? "COUNT(DISTINCT ano)" : "0";
+    $rowKpiBanco = $pdo->query("
+        SELECT
+            COUNT(DISTINCT nomeCandidatoResp) AS total_candidatos,
+            COUNT(DISTINCT nomeCargoPerg)     AS total_cargos,
+            SUM(qtdVotos)                     AS total_geral,
+            $colCountAno                      AS total_anos
+        FROM votos
+    ")->fetch();
+
+    $totalCandidatosBanco = (int)$rowKpiBanco['total_candidatos'];
+    $totalCargosBanco     = (int)$rowKpiBanco['total_cargos'];
+    $totalGeralBanco      = (int)$rowKpiBanco['total_geral'];
+    $totalAnosBanco       = (int)$rowKpiBanco['total_anos'];
+
+    if ($temAno) {
+        $totalCampanhasBanco = (int)$pdo->query(
+            "SELECT COUNT(*) FROM (
+                SELECT DISTINCT nomeCandidatoResp, nomeCargoPerg, ano FROM votos
+             ) t"
+        )->fetchColumn();
+    } else {
+        $totalCampanhasBanco = (int)$pdo->query(
+            "SELECT COUNT(*) FROM (
+                SELECT DISTINCT nomeCandidatoResp, nomeCargoPerg FROM votos
+             ) t"
+        )->fetchColumn();
+    }
+
+    // ---- Votos por região ----
+    $sqlRegioesFiltro = "
+        SELECT
+            COALESCE(r.nome, 'Sem região') AS regiao,
+            COUNT(DISTINCT v.nomeMunicipio) AS qtd_municipios,
+            COUNT(DISTINCT v.numeroZona)    AS qtd_zonas,
+            COUNT(DISTINCT v.nomeCandidatoResp) AS qtd_candidatos,
+            SUM(v.qtdVotos)                 AS total
+        FROM votos v
+        LEFT JOIN municipio_regiao mr
+          ON mr.nomeMunicipio COLLATE utf8mb4_general_ci
+           = v.nomeMunicipio  COLLATE utf8mb4_general_ci
+        LEFT JOIN regioes r ON r.id = mr.regiao_id
+        $where
+        GROUP BY r.nome
+        ORDER BY total DESC
+    ";
+    $stmt = $pdo->prepare($sqlRegioesFiltro);
+    $stmt->execute($params);
+    $porRegiao = $stmt->fetchAll();
+
+    $maxVotosRegiao = 0;
+    foreach ($porRegiao as $r) {
+        if ((int)$r['total'] > $maxVotosRegiao) $maxVotosRegiao = (int)$r['total'];
+    }
+
+    // ---- Listagem detalhada por município ----
+    $colSecaoSelect = $temSecao ? ",
+            COUNT(DISTINCT v.`$colSecao`) AS qtd_secoes,
+            GROUP_CONCAT(DISTINCT v.`$colSecao` ORDER BY v.`$colSecao` SEPARATOR ',') AS secoes_lista
+        " : "";
+
+    $sqlMunicipios = "
+        SELECT
+            v.nomeMunicipio,
+            COALESCE(r.nome, 'Sem região') AS regiao,
+            SUM(v.qtdVotos) AS total,
+            COUNT(DISTINCT v.numeroZona) AS qtd_zonas,
+            COUNT(DISTINCT v.nomeCandidatoResp) AS qtd_candidatos,
+            GROUP_CONCAT(DISTINCT v.numeroZona ORDER BY v.numeroZona SEPARATOR ',') AS zonas_lista
+            $colSecaoSelect
+        FROM votos v
+        LEFT JOIN municipio_regiao mr
+          ON mr.nomeMunicipio COLLATE utf8mb4_general_ci
+           = v.nomeMunicipio  COLLATE utf8mb4_general_ci
+        LEFT JOIN regioes r ON r.id = mr.regiao_id
+        $where
+        GROUP BY v.nomeMunicipio, r.nome
+        ORDER BY total DESC
+    ";
+    $stmt = $pdo->prepare($sqlMunicipios);
+    $stmt->execute($params);
+    $municipiosDetalhado = $stmt->fetchAll();
+
+    // ---- Rankings ----
+    $aggCand = [];
+    foreach ($campanhas as $c) {
+        $chave = ($temAno ? ($c['ano'] ?? '—') . '|' : '') . $c['candidato'];
+        if (!isset($aggCand[$chave])) {
+            $aggCand[$chave] = [
+                'ano'        => $c['ano'] ?? null,
+                'candidato'  => $c['candidato'],
+                'qtd_cargos' => 0,
+                'total'      => 0,
+            ];
+        }
+        $aggCand[$chave]['qtd_cargos'] += 1;
+        $aggCand[$chave]['total']      += (int)$c['total'];
+    }
+    $rankingCandidatos = array_values($aggCand);
+    usort($rankingCandidatos, function ($a, $b) use ($temAno) {
+        if ($temAno) {
+            $cmp = ($b['ano'] ?? 0) <=> ($a['ano'] ?? 0);
+            if ($cmp !== 0) return $cmp;
+        }
+        return $b['total'] <=> $a['total'];
+    });
+    $rankingCandidatos = array_slice($rankingCandidatos, 0, 10);
+
+    $aggCargo = [];
+    foreach ($campanhas as $c) {
+        $chave = ($temAno ? ($c['ano'] ?? '—') . '|' : '') . $c['cargo'];
+        if (!isset($aggCargo[$chave])) {
+            $aggCargo[$chave] = [
+                'ano'            => $c['ano'] ?? null,
+                'cargo'          => $c['cargo'],
+                'qtd_candidatos' => 0,
+                'total'          => 0,
+            ];
+        }
+        $aggCargo[$chave]['qtd_candidatos'] += 1;
+        $aggCargo[$chave]['total']          += (int)$c['total'];
+    }
+    $rankingCargos = array_values($aggCargo);
+    usort($rankingCargos, function ($a, $b) use ($temAno) {
+        if ($temAno) {
+            $cmp = ($b['ano'] ?? 0) <=> ($a['ano'] ?? 0);
+            if ($cmp !== 0) return $cmp;
+        }
+        return $b['total'] <=> $a['total'];
+    });
+
+    $pctFiltroBanco = $totalGeralBanco > 0
+        ? ($totalGeralFiltro / $totalGeralBanco) * 100
+        : 0;
 }
-$stmt = $pdo->prepare($sqlCampCount);
-$stmt->execute($params);
-$totalCampanhasFiltro = (int)$stmt->fetchColumn();
-
-// KPIs globais (referência)
-$colCountAno = $temAno ? "COUNT(DISTINCT ano)" : "0";
-$rowKpiBanco = $pdo->query("
-    SELECT
-        COUNT(DISTINCT nomeCandidatoResp) AS total_candidatos,
-        COUNT(DISTINCT nomeCargoPerg)     AS total_cargos,
-        SUM(qtdVotos)                     AS total_geral,
-        $colCountAno                      AS total_anos
-    FROM votos
-")->fetch();
-
-$totalCandidatosBanco = (int)$rowKpiBanco['total_candidatos'];
-$totalCargosBanco     = (int)$rowKpiBanco['total_cargos'];
-$totalGeralBanco      = (int)$rowKpiBanco['total_geral'];
-$totalAnosBanco       = (int)$rowKpiBanco['total_anos'];
-
-if ($temAno) {
-    $totalCampanhasBanco = (int)$pdo->query(
-        "SELECT COUNT(*) FROM (
-            SELECT DISTINCT nomeCandidatoResp, nomeCargoPerg, ano FROM votos
-         ) t"
-    )->fetchColumn();
-} else {
-    $totalCampanhasBanco = (int)$pdo->query(
-        "SELECT COUNT(*) FROM (
-            SELECT DISTINCT nomeCandidatoResp, nomeCargoPerg FROM votos
-         ) t"
-    )->fetchColumn();
-}
-
-// ============================================================
-// VOTOS POR REGIÃO
-// ============================================================
-$sqlRegioesFiltro = "
-    SELECT
-        COALESCE(r.nome, 'Sem região') AS regiao,
-        COUNT(DISTINCT v.nomeMunicipio) AS qtd_municipios,
-        COUNT(DISTINCT v.numeroZona)    AS qtd_zonas,
-        COUNT(DISTINCT v.nomeCandidatoResp) AS qtd_candidatos,
-        SUM(v.qtdVotos)                 AS total
-    FROM votos v
-    LEFT JOIN municipio_regiao mr
-      ON mr.nomeMunicipio COLLATE utf8mb4_general_ci
-       = v.nomeMunicipio  COLLATE utf8mb4_general_ci
-    LEFT JOIN regioes r ON r.id = mr.regiao_id
-    $where
-    GROUP BY r.nome
-    ORDER BY total DESC
-";
-$stmt = $pdo->prepare($sqlRegioesFiltro);
-$stmt->execute($params);
-$porRegiao = $stmt->fetchAll();
-
-$maxVotosRegiao = 0;
-foreach ($porRegiao as $r) {
-    if ((int)$r['total'] > $maxVotosRegiao) $maxVotosRegiao = (int)$r['total'];
-}
-
-// ============================================================
-// LISTAGEM DETALHADA POR MUNICÍPIO
-// ============================================================
-$colSecaoSelect = $temSecao ? ",
-        COUNT(DISTINCT v.`$colSecao`) AS qtd_secoes,
-        GROUP_CONCAT(DISTINCT v.`$colSecao` ORDER BY v.`$colSecao` SEPARATOR ',') AS secoes_lista
-    " : "";
-
-$sqlMunicipios = "
-    SELECT
-        v.nomeMunicipio,
-        COALESCE(r.nome, 'Sem região') AS regiao,
-        SUM(v.qtdVotos) AS total,
-        COUNT(DISTINCT v.numeroZona) AS qtd_zonas,
-        COUNT(DISTINCT v.nomeCandidatoResp) AS qtd_candidatos,
-        GROUP_CONCAT(DISTINCT v.numeroZona ORDER BY v.numeroZona SEPARATOR ',') AS zonas_lista
-        $colSecaoSelect
-    FROM votos v
-    LEFT JOIN municipio_regiao mr
-      ON mr.nomeMunicipio COLLATE utf8mb4_general_ci
-       = v.nomeMunicipio  COLLATE utf8mb4_general_ci
-    LEFT JOIN regioes r ON r.id = mr.regiao_id
-    $where
-    GROUP BY v.nomeMunicipio, r.nome
-    ORDER BY total DESC
-";
-$stmt = $pdo->prepare($sqlMunicipios);
-$stmt->execute($params);
-$municipiosDetalhado = $stmt->fetchAll();
 
 // ------------------------------------------------------------
 // Helper: gera chips HTML COM ESPAÇO entre eles
@@ -437,7 +528,7 @@ function renderTags($lista, $prefixo, $classeCss) {
                   . $prefixo . htmlspecialchars($it)
                   . '</span>';
     }
-    return implode(' ', $partes);       // espaço entre chips
+    return implode(' ', $partes);
 }
 
 // ------------------------------------------------------------
@@ -458,57 +549,7 @@ function tagsSearchText($lista, $prefixo) {
 }
 
 // ============================================================
-// RANKINGS
-// ============================================================
-$aggCand = [];
-foreach ($campanhas as $c) {
-    $chave = ($temAno ? ($c['ano'] ?? '—') . '|' : '') . $c['candidato'];
-    if (!isset($aggCand[$chave])) {
-        $aggCand[$chave] = [
-            'ano'        => $c['ano'] ?? null,
-            'candidato'  => $c['candidato'],
-            'qtd_cargos' => 0,
-            'total'      => 0,
-        ];
-    }
-    $aggCand[$chave]['qtd_cargos'] += 1;
-    $aggCand[$chave]['total']      += (int)$c['total'];
-}
-$rankingCandidatos = array_values($aggCand);
-usort($rankingCandidatos, function ($a, $b) use ($temAno) {
-    if ($temAno) {
-        $cmp = ($b['ano'] ?? 0) <=> ($a['ano'] ?? 0);
-        if ($cmp !== 0) return $cmp;
-    }
-    return $b['total'] <=> $a['total'];
-});
-$rankingCandidatos = array_slice($rankingCandidatos, 0, 10);
-
-$aggCargo = [];
-foreach ($campanhas as $c) {
-    $chave = ($temAno ? ($c['ano'] ?? '—') . '|' : '') . $c['cargo'];
-    if (!isset($aggCargo[$chave])) {
-        $aggCargo[$chave] = [
-            'ano'            => $c['ano'] ?? null,
-            'cargo'          => $c['cargo'],
-            'qtd_candidatos' => 0,
-            'total'          => 0,
-        ];
-    }
-    $aggCargo[$chave]['qtd_candidatos'] += 1;
-    $aggCargo[$chave]['total']          += (int)$c['total'];
-}
-$rankingCargos = array_values($aggCargo);
-usort($rankingCargos, function ($a, $b) use ($temAno) {
-    if ($temAno) {
-        $cmp = ($b['ano'] ?? 0) <=> ($a['ano'] ?? 0);
-        if ($cmp !== 0) return $cmp;
-    }
-    return $b['total'] <=> $a['total'];
-});
-
-// ============================================================
-// LISTAS PARA SELECTS
+// LISTAS PARA SELECTS (sempre carregam)
 // ============================================================
 $anosDisponiveis = [];
 if ($temAno) {
@@ -529,16 +570,11 @@ $regioes = $pdo->query(
     "SELECT id, nome FROM regioes ORDER BY nome"
 )->fetchAll();
 
-$temFiltro = $ano || $cargo || $candidato || $regiao;
-
+$temFiltro  = $ano || $cargo || $candidato || $regiao;
 $numColunas = ($temAno ? 8 : 7) + 1 + 1 + ($isAdmin ? 1 : 0);
 
 $debugSessao = isset($_GET['debug_sessao']);
 $debugSecao  = isset($_GET['debug_secao']);
-
-$pctFiltroBanco = $totalGeralBanco > 0
-    ? ($totalGeralFiltro / $totalGeralBanco) * 100
-    : 0;
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -696,6 +732,74 @@ $pctFiltroBanco = $totalGeralBanco > 0
     .link-voltar { display:inline-block; margin-bottom:15px; color:#0069d9; text-decoration:none; }
     .link-voltar:hover { text-decoration:underline; }
 
+    /* Tela em branco inicial */
+    .estado-inicial {
+        background: #fff;
+        border-radius: 12px;
+        padding: 56px 40px;
+        text-align: center;
+        box-shadow: 0 1px 4px rgba(0,0,0,.08);
+        margin-bottom: 24px;
+        border-top: 6px solid #0069d9;
+    }
+    .estado-inicial .icone {
+        font-size: 56px;
+        line-height: 1;
+        margin-bottom: 18px;
+        display: block;
+    }
+    .estado-inicial h2 {
+        margin: 0 0 12px;
+        font-size: 22px;
+        color: #0b3d91;
+    }
+    .estado-inicial p {
+        margin: 0 0 20px;
+        font-size: 15px;
+        color: #555;
+        line-height: 1.6;
+        max-width: 640px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+    .estado-inicial .passos {
+        display: inline-flex;
+        gap: 14px;
+        flex-wrap: wrap;
+        justify-content: center;
+        margin-top: 8px;
+    }
+    .estado-inicial .passo {
+        background: #eaf3fb;
+        border: 1px solid #cfe2ff;
+        border-radius: 10px;
+        padding: 12px 18px;
+        font-size: 13.5px;
+        color: #0053b3;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .estado-inicial .passo .num-passo {
+        background: #0069d9;
+        color: #fff;
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        font-weight: bold;
+    }
+    .estado-inicial small {
+        display: block;
+        margin-top: 20px;
+        color: #888;
+        font-size: 12.5px;
+    }
+
     .flash {
         padding: 12px 18px; border-radius: 6px; margin-bottom: 18px;
         font-size: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); line-height: 1.5;
@@ -836,7 +940,6 @@ $pctFiltroBanco = $totalGeralBanco > 0
     }
     .dt-header .dt-total { font-size: 12px; color: #888; }
 
-    /* Filtros dedicados Zona / Seção */
     .dt-filtros {
         display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px;
         background: #f6f9fd; border: 1px solid #dbe6f5; border-radius: 8px;
@@ -883,7 +986,6 @@ $pctFiltroBanco = $totalGeralBanco > 0
         border:1px solid #dbe6f5; font-size:11px;
     }
 
-    /* Tabela DataTable */
     #tabela-municipios_wrapper { width: 100%; }
     #tabela-municipios {
         font-size: 13px;
@@ -926,7 +1028,6 @@ $pctFiltroBanco = $totalGeralBanco > 0
     .tag-zona  { background: #e7f3ff; color: #0053b3; border: 1px solid #cfe2ff; }
     .tag-secao { background: #e6f9f0; color: #0f8a54; border: 1px solid #c7efd9; }
 
-    /* DataTables controles */
     .dataTables_wrapper .dataTables_filter input,
     .dataTables_wrapper .dataTables_length select {
         padding: 5px 8px; border-radius: 4px; border: 1px solid #ccc;
@@ -1021,15 +1122,6 @@ $pctFiltroBanco = $totalGeralBanco > 0
     : '<span class="aviso">(NENHUMA — nenhuma coluna com "secao" no nome)</span>' ?>
 
 <span class="destaque">Total de municípios carregados:</span> <?= count($municipiosDetalhado) ?>
-
-<span class="destaque">Primeiras 5 linhas do secoes_lista:</span>
-<?php foreach (array_slice($municipiosDetalhado, 0, 5) as $m): ?>
-  • <?= htmlspecialchars($m['nomeMunicipio']) ?>
-      qtd_secoes   = <?= (int)($m['qtd_secoes'] ?? 0) ?>
-
-      secoes_lista = <?= htmlspecialchars((string)($m['secoes_lista'] ?? '(NULL)')) ?>
-
-<?php endforeach; ?>
 </pre>
     </div>
 <?php endif; ?>
@@ -1064,62 +1156,15 @@ $pctFiltroBanco = $totalGeralBanco > 0
     </div>
 <?php endif; ?>
 
-<!-- KPIs -->
-<div class="kpis">
-    <div class="kpi <?= $temFiltro ? 'ativo' : '' ?>">
-        <div class="rotulo">Candidatos<?= $temFiltro ? ' (filtro)' : '' ?></div>
-        <div class="valor"><?= number_format($totalCandidatos, 0, ',', '.') ?></div>
-    </div>
-    <div class="kpi roxo <?= $temFiltro ? 'ativo' : '' ?>">
-        <div class="rotulo">Cargos<?= $temFiltro ? ' (filtro)' : '' ?></div>
-        <div class="valor"><?= number_format($totalCargos, 0, ',', '.') ?></div>
-    </div>
-    <div class="kpi laranja <?= $temFiltro ? 'ativo' : '' ?>">
-        <div class="rotulo">Campanhas<?= $temAno ? ' (cand × cargo × ano)' : ' (cand × cargo)' ?><?= $temFiltro ? ' (filtro)' : '' ?></div>
-        <div class="valor"><?= number_format($totalCampanhasFiltro, 0, ',', '.') ?></div>
-    </div>
-    <?php if ($temAno && $totalAnos > 0): ?>
-        <div class="kpi teal <?= $temFiltro ? 'ativo' : '' ?>">
-            <div class="rotulo">Anos distintos<?= $temFiltro ? ' (filtro)' : '' ?></div>
-            <div class="valor"><?= number_format($totalAnos, 0, ',', '.') ?></div>
-        </div>
-    <?php endif; ?>
-    <div class="kpi verde <?= $temFiltro ? 'ativo' : '' ?>">
-        <div class="rotulo">Total de votos<?= $temFiltro ? ' (filtro)' : ' no banco' ?></div>
-        <div class="valor"><?= number_format($totalGeralFiltro, 0, ',', '.') ?></div>
-        <?php if ($temFiltro && $totalGeralBanco > 0): ?>
-            <div class="sub"><?= number_format($pctFiltroBanco, 2, ',', '.') ?>% do banco</div>
-        <?php endif; ?>
-    </div>
-    <div class="kpi <?= $temFiltro ? 'ativo' : '' ?>">
-        <div class="rotulo">Municípios<?= $temFiltro ? ' (filtro)' : '' ?></div>
-        <div class="valor"><?= number_format($totalMunicipios, 0, ',', '.') ?></div>
-    </div>
-    <div class="kpi cinza <?= $temFiltro ? 'ativo' : '' ?>">
-        <div class="rotulo">Zonas<?= $temFiltro ? ' (filtro)' : '' ?></div>
-        <div class="valor"><?= number_format($totalZonas, 0, ',', '.') ?></div>
-    </div>
-</div>
-
-<?php if ($temFiltro): ?>
-    <div class="kpi-banco">
-        <span><span class="tag">Banco completo:</span>
-            <strong><?= number_format($totalCandidatosBanco, 0, ',', '.') ?></strong> candidatos</span>
-        <span><strong><?= number_format($totalCargosBanco, 0, ',', '.') ?></strong> cargos</span>
-        <span><strong><?= number_format($totalCampanhasBanco, 0, ',', '.') ?></strong> campanhas</span>
-        <?php if ($temAno): ?>
-            <span><strong><?= number_format($totalAnosBanco, 0, ',', '.') ?></strong> anos</span>
-        <?php endif; ?>
-        <span><strong><?= number_format($totalGeralBanco, 0, ',', '.') ?></strong> votos</span>
-    </div>
-<?php endif; ?>
-
+<!-- ============================================================ -->
+<!-- FORMULÁRIO DE FILTROS (não auto-submete)                     -->
+<!-- ============================================================ -->
 <form method="get" action="candidatos_campanhas.php" id="form-filtros">
     <div class="filtros">
         <?php if ($temAno && $anosDisponiveis): ?>
             <label for="ano">Ano:</label>
             <select name="ano" id="ano">
-                <option value="">Todos</option>
+                <option value="">— selecione —</option>
                 <?php foreach ($anosDisponiveis as $a): ?>
                     <option value="<?= (int)$a ?>"
                         <?= (string)$a === (string)$ano ? 'selected' : '' ?>><?= (int)$a ?></option>
@@ -1139,7 +1184,7 @@ $pctFiltroBanco = $totalGeralBanco > 0
 
         <label for="candidato">Candidato:</label>
         <select name="candidato" id="candidato">
-            <option value="">Todos</option>
+            <option value="">— selecione —</option>
             <?php foreach ($candidatos as $c): ?>
                 <option value="<?= htmlspecialchars($c) ?>" <?= $c === $candidato ? 'selected' : '' ?>>
                     <?= htmlspecialchars($c) ?>
@@ -1173,11 +1218,91 @@ $pctFiltroBanco = $totalGeralBanco > 0
     </div>
 </form>
 
+<?php if (!$mostrarDados): ?>
+
+    <!-- ============================================================ -->
+    <!-- TELA EM BRANCO (estado inicial)                               -->
+    <!-- ============================================================ -->
+    <div class="estado-inicial">
+        <span class="icone">🔎</span>
+        <h2>Selecione os filtros para começar</h2>
+        <p>
+            Para exibir os dados de campanhas, escolha
+            <?php if ($temAno): ?>
+                <b>o Ano</b> e <b>o Candidato</b>
+            <?php else: ?>
+                <b>o Candidato</b>
+            <?php endif; ?>
+            acima e clique em <b>Consultar</b>.
+            Os demais filtros (Cargo, Região, Ordenação) são opcionais e refinam o resultado.
+        </p>
+        <div class="passos">
+            <div class="passo"><span class="num-passo">1</span>
+                <?= $temAno ? 'Escolha o Ano' : 'Escolha o Candidato' ?>
+            </div>
+            <?php if ($temAno): ?>
+            <div class="passo"><span class="num-passo">2</span> Escolha o Candidato</div>
+            <?php endif; ?>
+            <div class="passo"><span class="num-passo"><?= $temAno ? '3' : '2' ?></span> Clique em Consultar</div>
+        </div>
+        <small>💡 Dica: use os filtros opcionais (Cargo, Região) para refinar ainda mais o resultado.</small>
+    </div>
+
+<?php else: ?>
+
+<!-- KPIs -->
+<div class="kpis">
+    <div class="kpi ativo">
+        <div class="rotulo">Candidatos (filtro)</div>
+        <div class="valor"><?= number_format($totalCandidatos, 0, ',', '.') ?></div>
+    </div>
+    <div class="kpi roxo ativo">
+        <div class="rotulo">Cargos (filtro)</div>
+        <div class="valor"><?= number_format($totalCargos, 0, ',', '.') ?></div>
+    </div>
+    <div class="kpi laranja ativo">
+        <div class="rotulo">Campanhas<?= $temAno ? ' (cand × cargo × ano)' : ' (cand × cargo)' ?> (filtro)</div>
+        <div class="valor"><?= number_format($totalCampanhasFiltro, 0, ',', '.') ?></div>
+    </div>
+    <?php if ($temAno && $totalAnos > 0): ?>
+        <div class="kpi teal ativo">
+            <div class="rotulo">Anos distintos (filtro)</div>
+            <div class="valor"><?= number_format($totalAnos, 0, ',', '.') ?></div>
+        </div>
+    <?php endif; ?>
+    <div class="kpi verde ativo">
+        <div class="rotulo">Total de votos (filtro)</div>
+        <div class="valor"><?= number_format($totalGeralFiltro, 0, ',', '.') ?></div>
+        <?php if ($totalGeralBanco > 0): ?>
+            <div class="sub"><?= number_format($pctFiltroBanco, 2, ',', '.') ?>% do banco</div>
+        <?php endif; ?>
+    </div>
+    <div class="kpi ativo">
+        <div class="rotulo">Municípios (filtro)</div>
+        <div class="valor"><?= number_format($totalMunicipios, 0, ',', '.') ?></div>
+    </div>
+    <div class="kpi cinza ativo">
+        <div class="rotulo">Zonas (filtro)</div>
+        <div class="valor"><?= number_format($totalZonas, 0, ',', '.') ?></div>
+    </div>
+</div>
+
+<div class="kpi-banco">
+    <span><span class="tag">Banco completo:</span>
+        <strong><?= number_format($totalCandidatosBanco, 0, ',', '.') ?></strong> candidatos</span>
+    <span><strong><?= number_format($totalCargosBanco, 0, ',', '.') ?></strong> cargos</span>
+    <span><strong><?= number_format($totalCampanhasBanco, 0, ',', '.') ?></strong> campanhas</span>
+    <?php if ($temAno): ?>
+        <span><strong><?= number_format($totalAnosBanco, 0, ',', '.') ?></strong> anos</span>
+    <?php endif; ?>
+    <span><strong><?= number_format($totalGeralBanco, 0, ',', '.') ?></strong> votos</span>
+</div>
+
 <!-- ============================================================ -->
 <!-- VOTOS POR REGIÃO                                             -->
 <!-- ============================================================ -->
 <?php if ($porRegiao): ?>
-    <h2>Votos por Região <?= $temFiltro ? '(filtradas)' : '' ?></h2>
+    <h2>Votos por Região (filtradas)</h2>
 
     <div class="regioes-grid">
         <?php
@@ -1253,7 +1378,7 @@ $pctFiltroBanco = $totalGeralBanco > 0
     </table>
 <?php endif; ?>
 
-<h2>Campanhas <?= $temFiltro ? '(filtradas)' : '' ?></h2>
+<h2>Campanhas (filtradas)</h2>
 
 <?php if (!$campanhas): ?>
     <div class="aviso">Nenhuma campanha encontrada para os filtros selecionados.</div>
@@ -1431,7 +1556,7 @@ $pctFiltroBanco = $totalGeralBanco > 0
 <!-- ============================================================ -->
 <!-- VOTAÇÃO POR MUNICÍPIO (DataTable)                            -->
 <!-- ============================================================ -->
-<h2>Votação por Município <?= $temFiltro ? '(filtrada)' : '' ?></h2>
+<h2>Votação por Município (filtrada)</h2>
 
 <div class="dt-wrapper">
     <div class="dt-header">
@@ -1444,7 +1569,6 @@ $pctFiltroBanco = $totalGeralBanco > 0
         </div>
     </div>
 
-    <!-- Filtros dedicados Zona / Seção -->
     <div class="dt-filtros">
         <div class="filtro-item">
             <label for="filtroZona">🔷 Buscar zona:</label>
@@ -1497,13 +1621,11 @@ $pctFiltroBanco = $totalGeralBanco > 0
                 $qtdS   = (int)($m['qtd_secoes']     ?? 0);
                 $qtdC   = (int)($m['qtd_candidatos'] ?? 0);
 
-                // Chips visuais (com espaço entre eles)
                 $tagsZ = renderTags($m['zonas_lista']  ?? '', '#Z', 'tag-zona');
                 $tagsS = $temSecao
                        ? renderTags($m['secoes_lista'] ?? '', '#S', 'tag-secao')
                        : '';
 
-                // Texto puro pesquisável — vai no data-search do <td>
                 $searchZ = tagsSearchText($m['zonas_lista']  ?? '', '#Z');
                 $searchS = $temSecao
                          ? tagsSearchText($m['secoes_lista'] ?? '', '#S')
@@ -1530,7 +1652,6 @@ $pctFiltroBanco = $totalGeralBanco > 0
 
                     <td class="num" data-order="<?= $qtdZ ?>"><?= $qtdZ ?></td>
 
-                    <!-- Zonas (#Z) — data-search no <td> -->
                     <td data-search="<?= htmlspecialchars($searchZ) ?>">
                         <div class="tags-cell"><?= $tagsZ ?></div>
                     </td>
@@ -1538,7 +1659,6 @@ $pctFiltroBanco = $totalGeralBanco > 0
                     <?php if ($temSecao): ?>
                         <td class="num" data-order="<?= $qtdS ?>"><?= $qtdS ?></td>
 
-                        <!-- Seções (#S) — data-search no <td> -->
                         <td data-search="<?= htmlspecialchars($searchS) ?>">
                             <div class="tags-cell"><?= $tagsS ?: '<span style="color:#bbb;">—</span>' ?></div>
                         </td>
@@ -1565,8 +1685,10 @@ $pctFiltroBanco = $totalGeralBanco > 0
     </table>
 </div>
 
-<!-- MODAL — confirmação pelo NÚMERO -->
-<?php if ($isAdmin): ?>
+<?php endif; /* fim do bloco $mostrarDados */ ?>
+
+<!-- MODAL — confirmação pelo NÚMERO (só admin + dados visíveis) -->
+<?php if ($isAdmin && $mostrarDados): ?>
 <div id="modal-apagar" aria-hidden="true">
     <div class="caixa">
         <div class="cabecalho">
@@ -1616,10 +1738,11 @@ $pctFiltroBanco = $totalGeralBanco > 0
 
 <script>
     // ============================================================
-    // Select2 + auto-submit dos filtros
+    // Select2 (sem auto-submit)
     // ============================================================
     (function () {
         if (typeof jQuery === 'undefined' || typeof jQuery.fn.select2 === 'undefined') return;
+        if (!jQuery('#candidato').length) return;
 
         function removerAcentos(s) {
             return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -1640,24 +1763,21 @@ $pctFiltroBanco = $totalGeralBanco > 0
             matcher: matcherSemAcento
         });
 
-        ['#ano', '#cargo', '#regiao', '#ordem'].forEach(function (sel) {
-            jQuery(sel).on('change', function () {
-                document.getElementById('form-filtros').submit();
-            });
-        });
+        // NENHUM auto-submit — o form só envia ao clicar em "Consultar".
     })();
 
     // ============================================================
-    // DataTable — Votação por Município + filtros Zona / Seção
+    // DataTable — Votação por Município
     // ============================================================
     (function () {
         if (typeof jQuery === 'undefined' || typeof jQuery.fn.DataTable === 'undefined') return;
+        if (!jQuery('#tabela-municipios').length) return;
 
         const dt = jQuery('#tabela-municipios').DataTable({
             language: {
                 url: 'https://cdn.datatables.net/plug-ins/1.13.7/i18n/pt-BR.json'
             },
-            order: [[3, 'desc']],   // Votos DESC
+            order: [[3, 'desc']],
             pageLength: 25,
             lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, 'Todos']],
             autoWidth: false,
@@ -1667,12 +1787,9 @@ $pctFiltroBanco = $totalGeralBanco > 0
             ]
         });
 
-        // Índices: 0=#, 1=Município, 2=Região, 3=Votos, 4=%, 5=QtdZonas,
-        //          6=Zonas(#Z), 7=QtdSeções, 8=Seções(#S), 9=Candidatos
         const COL_ZONA  = 6;
         const COL_SECAO = <?= $temSecao ? 8 : -1 ?>;
 
-        // ---- Filtro Zona ----
         jQuery('#filtroZona').on('keyup change input', function () {
             const v = this.value.trim();
             if (v === '') { dt.column(COL_ZONA).search('').draw(); return; }
@@ -1681,7 +1798,6 @@ $pctFiltroBanco = $totalGeralBanco > 0
             dt.column(COL_ZONA).search('#Z' + num, false, false).draw();
         });
 
-        // ---- Filtro Seção ----
         if (COL_SECAO >= 0) {
             jQuery('#filtroSecao').on('keyup change input', function () {
                 const v = this.value.trim();
@@ -1692,31 +1808,18 @@ $pctFiltroBanco = $totalGeralBanco > 0
             });
         }
 
-        // ---- Botões "×" ----
         jQuery('.filtro-clear').on('click', function () {
             const id = jQuery(this).data('target');
             jQuery('#' + id).val('').trigger('keyup');
             jQuery('#' + id).focus();
         });
 
-        // ---- Botão "Limpar todos" ----
         jQuery('#btnLimparTodosFiltros').on('click', function () {
             dt.search('');
             dt.columns().search('');
             jQuery('#filtroZona, #filtroSecao').val('');
             dt.draw();
         });
-
-        // ---- Log de diagnóstico (só quando ?debug_secao=1) ----
-        <?php if ($debugSecao): ?>
-        console.log('=== DEBUG SEÇÃO ===');
-        console.log('COL_SECAO =', COL_SECAO);
-        console.log('Coluna detectada =', '<?= htmlspecialchars($colSecao) ?>');
-        console.log('Amostra secoes_lista:');
-        <?php foreach (array_slice($municipiosDetalhado, 0, 5) as $m): ?>
-        console.log('  <?= addslashes($m['nomeMunicipio']) ?>:', '<?= addslashes((string)($m['secoes_lista'] ?? '')) ?>');
-        <?php endforeach; ?>
-        <?php endif; ?>
     })();
 
     // ============================================================
@@ -1813,11 +1916,13 @@ $pctFiltroBanco = $totalGeralBanco > 0
     })();
 
     // ============================================================
-    // Modal de exclusão (admin)
+    // Modal de exclusão (admin + dados visíveis)
     // ============================================================
-    <?php if ($isAdmin): ?>
+    <?php if ($isAdmin && $mostrarDados): ?>
     (function () {
         const modal       = document.getElementById('modal-apagar');
+        if (!modal) return;
+
         const elDet       = document.getElementById('modalDetalhe');
         const inputConf   = document.getElementById('confirmaNumero');
         const avisoNumero = document.getElementById('avisoNumero');

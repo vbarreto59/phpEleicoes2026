@@ -654,7 +654,7 @@ $totalPct = $totalEsperado > 0
                 <th class="centro" style="width:80px;">Seções</th>
                 <th class="centro" style="width:80px;">Líderes</th>
                 <th class="num" style="width:110px;">Esperado</th>
-                <th class="num" style="width:110px;">Urnas</th>
+                <th class="num" style="width:110px;">Votos Urnas</th>
                 <th class="num" style="width:100px;">Diferença</th>
                 <th class="centro" style="width:130px;">%</th>
                 <th style="width:70px;">Status</th>

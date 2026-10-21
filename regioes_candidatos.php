@@ -47,8 +47,38 @@ $pdo = new PDO(
     ]
 );
 
+// ------------------------------------------------------------
+// Detectar colunas: ano, numero, e seção
+// ------------------------------------------------------------
 $colunasVotos = $pdo->query("SHOW COLUMNS FROM votos")->fetchAll(PDO::FETCH_COLUMN);
-$temAno = in_array('ano', $colunasVotos, true);
+$temAno    = in_array('ano', $colunasVotos, true);
+$temNumero = in_array('numero', $colunasVotos, true);
+
+$candidatasSecao = [
+    'numeroSecao','numero_secao','secao','nrSecao','NR_SECAO',
+    'numSecao','num_secao','secaoNumero','secao_numero',
+    'cdSecao','cd_secao','codSecao','cod_secao',
+    'nr_secao','secao_num'
+];
+$colSecao = '';
+foreach ($candidatasSecao as $cand) {
+    if (in_array($cand, $colunasVotos, true)) { $colSecao = $cand; break; }
+}
+if ($colSecao === '') {
+    foreach ($colunasVotos as $col) {
+        $norm = strtolower($col);
+        $norm = str_replace(
+            ['ç','ã','á','à','â','é','ê','í','ó','õ','ú'],
+            ['c','a','a','a','a','e','e','i','o','o','u'],
+            $norm
+        );
+        if (strpos($norm, 'secao') !== false) {
+            $colSecao = $col;
+            break;
+        }
+    }
+}
+$temSecao = ($colSecao !== '');
 
 // ============================================================
 // AJAX — dados do gráfico
@@ -67,6 +97,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'chart_regioes') {
             exit;
         }
 
+        // ----- WHERE com filtro de candidato (para o gráfico) -----
         $w = [];
         $p = [];
 
@@ -99,6 +130,29 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'chart_regioes') {
 
         $whereCh = $w ? 'WHERE ' . implode(' AND ', $w) : '';
 
+        // ----- WHERE sem filtro de candidato (para os totais de zonas/seções) -----
+        $wTot = [];
+        $pTot = [];
+        if ($temAno && $chAno !== '') {
+            $wTot[]       = "v.ano = :ano";
+            $pTot[':ano'] = (int)$chAno;
+        }
+        if ($chCargo !== '') {
+            $wTot[]         = "v.nomeCargoPerg = :cargo";
+            $pTot[':cargo'] = $chCargo;
+        }
+        if ($chReg !== '') {
+            $wTot[] = "EXISTS (
+                SELECT 1 FROM municipio_regiao mr
+                 WHERE mr.nomeMunicipio COLLATE utf8mb4_general_ci
+                     = v.nomeMunicipio  COLLATE utf8mb4_general_ci
+                   AND mr.regiao_id = :regiao
+            )";
+            $pTot[':regiao'] = (int)$chReg;
+        }
+        $whereTot = $wTot ? 'WHERE ' . implode(' AND ', $wTot) : '';
+
+        // ----- Query principal: votos por região × candidato -----
         $sqlCh = "
             SELECT
                 COALESCE(r.nome, 'Sem região') AS regiao,
@@ -116,6 +170,53 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'chart_regioes') {
         $stmt->execute($p);
         $rows = $stmt->fetchAll();
 
+        // ----- Municípios / zonas / seções por candidato -----
+        $colSecaoSel = $temSecao
+            ? ", COUNT(DISTINCT v.`$colSecao`) AS qtd_secoes"
+            : ", 0 AS qtd_secoes";
+
+        $sqlMunZonSec = "
+            SELECT
+                v.nomeCandidatoResp AS candidato,
+                COUNT(DISTINCT v.nomeMunicipio) AS qtd_municipios,
+                COUNT(DISTINCT v.numeroZona)    AS qtd_zonas
+                $colSecaoSel
+            FROM votos v
+            $whereCh
+            GROUP BY v.nomeCandidatoResp
+        ";
+        $stmtMun = $pdo->prepare($sqlMunZonSec);
+        $stmtMun->execute($p);
+
+        $munPorCand    = [];
+        $zonasPorCand  = [];
+        $secoesPorCand = [];
+        foreach ($stmtMun->fetchAll() as $r) {
+            $munPorCand[$r['candidato']]    = (int)$r['qtd_municipios'];
+            $zonasPorCand[$r['candidato']]  = (int)$r['qtd_zonas'];
+            $secoesPorCand[$r['candidato']] = (int)$r['qtd_secoes'];
+        }
+
+        // ----- Totais gerais (filtros aplicados, sem filtro de candidato) -----
+        $colSecaoTot = $temSecao
+            ? ", COUNT(DISTINCT v.`$colSecao`) AS qtd_secoes"
+            : ", 0 AS qtd_secoes";
+
+        $sqlTot = "
+            SELECT
+                COUNT(DISTINCT v.numeroZona) AS qtd_zonas
+                $colSecaoTot
+            FROM votos v
+            $whereTot
+        ";
+        $stmtTot = $pdo->prepare($sqlTot);
+        $stmtTot->execute($pTot);
+        $rowTot = $stmtTot->fetch();
+
+        $totalZonasGeral  = (int)($rowTot['qtd_zonas']  ?? 0);
+        $totalSecoesGeral = (int)($rowTot['qtd_secoes'] ?? 0);
+
+        // ----- Monta estrutura por região -----
         $regioesSet = [];
         $porRegiao  = [];
         foreach ($rows as $r) {
@@ -144,16 +245,22 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'chart_regioes') {
                 $valores[] = $porRegiao[$reg][$cand] ?? 0;
             }
             $datasets[] = [
-                'nome'    => $cand,
-                'valores' => $valores,
-                'total'   => array_sum($valores),
+                'nome'                => $cand,
+                'valores'             => $valores,
+                'total'               => array_sum($valores),
+                'municipios_com_voto' => $munPorCand[$cand]    ?? 0,
+                'zonas_com_voto'      => $zonasPorCand[$cand]  ?? 0,
+                'secoes_com_voto'     => $secoesPorCand[$cand] ?? 0,
             ];
         }
 
         echo json_encode([
-            'ok'       => true,
-            'regioes'  => $regioes,
-            'datasets' => $datasets,
+            'ok'                 => true,
+            'regioes'            => $regioes,
+            'datasets'           => $datasets,
+            'total_zonas_geral'  => $totalZonasGeral,
+            'total_secoes_geral' => $totalSecoesGeral,
+            'tem_secao'          => $temSecao,
         ], JSON_UNESCAPED_UNICODE);
     } catch (Exception $e) {
         http_response_code(500);
@@ -278,7 +385,6 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === 'tabela_regioes') {
             $linhas[] = $linha;
         }
 
-        // Total geral por candidato (para rodapé)
         $totalPorCand = [];
         foreach ($ordemCands as $cand) {
             $tot = 0;
@@ -405,6 +511,62 @@ $regiao = $_GET['regiao'] ?? '';
     .kpi-candidato.cor-2 .kc-total { color: #fd7e14; }
     .kpi-candidato .kc-sub { font-size: 12px; color: #666; margin-top: 4px; }
     .kpi-candidato .kc-vazio { color: #888; font-style: italic; font-size: 13px; padding: 10px 0; }
+
+    /* Grid de cobertura (regiões, municípios, zonas, seções) */
+    .kc-cobertura {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px 14px;
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px dashed #e5e5e5;
+    }
+    .kc-cob-item {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        font-size: 12px;
+        color: #555;
+        line-height: 1.35;
+    }
+    .kc-cob-num {
+        display: inline-block;
+        min-width: 26px;
+        padding: 1px 6px;
+        border-radius: 6px;
+        background: #eaf3fb;
+        color: #0069d9;
+        font-weight: bold;
+        font-size: 12.5px;
+        text-align: center;
+        font-family: 'Courier New', monospace;
+    }
+    .kpi-candidato.cor-2 .kc-cob-num { background: #fdefe2; color: #c8641a; }
+    .kc-cob-lbl { font-size: 11.5px; color: #555; }
+    .kc-cob-lbl b { color: #333; }
+    .kc-cob-pct {
+        display: inline-block;
+        margin-left: 4px;
+        font-size: 10.5px;
+        padding: 1px 5px;
+        border-radius: 8px;
+        background: #f3f3f3;
+        color: #666;
+        font-weight: 600;
+    }
+    .kc-cob-pct.alto { background: #d4f5dd; color: #1c7a34; }
+    .kc-cob-pct.medio { background: #fff3cd; color: #856404; }
+    .kc-cob-pct.baixo { background: #f8d7da; color: #721c24; }
+
+    .kc-mini-titulo {
+        grid-column: 1 / -1;
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: .5px;
+        color: #999;
+        margin: 4px 0 -2px;
+        font-weight: 600;
+    }
 
     .chart-card { background:#fff; border-radius:8px; padding: 18px 22px;
                   box-shadow: 0 1px 3px rgba(0,0,0,.1); margin-bottom: 26px; }
@@ -595,7 +757,7 @@ $regiao = $_GET['regiao'] ?? '';
 
 <script>
 // ============================================================
-// Nome deste arquivo (dinâmico) — resolve o bug do 404
+// Nome deste arquivo (dinâmico)
 // ============================================================
 const SELF = <?= json_encode($nomeArquivo) ?>;
 
@@ -614,8 +776,6 @@ const SELF = <?= json_encode($nomeArquivo) ?>;
     const $tab     = document.getElementById('tabelaContainer');
     const $kpiC1   = document.getElementById('kpiC1');
     const $kpiC2   = document.getElementById('kpiC2');
-    const $nomeC1  = document.getElementById('nomeC1');
-    const $nomeC2  = document.getElementById('nomeC2');
 
     let chart = null;
 
@@ -649,6 +809,18 @@ const SELF = <?= json_encode($nomeArquivo) ?>;
             '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
         })[c]);
     }
+    function pct(parte, total) {
+        if (!total || total <= 0) return '0';
+        return ((parte / total) * 100).toFixed(1).replace('.', ',');
+    }
+    function classePct(p) {
+        // p como string "12,3" (pt-BR) — normaliza para número
+        const v = parseFloat(String(p).replace(',', '.'));
+        if (isNaN(v)) return '';
+        if (v >= 66) return 'alto';
+        if (v >= 33) return 'medio';
+        return 'baixo';
+    }
     function paramsFiltros() {
         const p = {};
         if ($selAno   && $selAno.value)   p.ano    = $selAno.value;
@@ -668,38 +840,79 @@ const SELF = <?= json_encode($nomeArquivo) ?>;
     // ------------------------------------------------------------
     // KPIs
     // ------------------------------------------------------------
+    function linhaCobertura(rotulo, qtd, total, totalConhecido) {
+        // Se não sabemos o total (ex.: não há coluna de seção), mostra só a qtd.
+        if (!totalConhecido) {
+            return '<div class="kc-cob-item">' +
+                '<span class="kc-cob-num">' + fmtNum(qtd) + '</span>' +
+                '<span class="kc-cob-lbl">' + rotulo + '</span>' +
+            '</div>';
+        }
+        const p = pct(qtd, total);
+        const cls = classePct(p);
+        return '<div class="kc-cob-item">' +
+            '<span class="kc-cob-num">' + fmtNum(qtd) + '</span>' +
+            '<span class="kc-cob-lbl">de <b>' + fmtNum(total) + '</b> ' + rotulo +
+                '<span class="kc-cob-pct ' + cls + '">' + p + '%</span>' +
+            '</span>' +
+        '</div>';
+    }
+
+    function renderKPICandidato($el, ds, dados, corClasse) {
+        if (!ds) {
+            $el.innerHTML =
+                '<div class="kc-nome"><span class="kc-cor"></span><span>' +
+                    (corClasse === 'cor-1' ? 'Candidato 1' : 'Candidato 2') +
+                '</span></div>' +
+                '<div class="kc-vazio">' +
+                    (corClasse === 'cor-1' ? 'Não selecionado.' : 'Nenhum candidato selecionado.') +
+                '</div>';
+            return;
+        }
+
+        const regsComVoto   = ds.valores.filter(v => v > 0).length;
+        const max           = Math.max.apply(null, ds.valores.concat([0]));
+        const regiaoTop     = dados.regioes[ds.valores.indexOf(max)] || '—';
+        const munsComVoto   = Number(ds.municipios_com_voto || 0);
+        const zonasComVoto  = Number(ds.zonas_com_voto || 0);
+        const secoesComVoto = Number(ds.secoes_com_voto || 0);
+
+        const totalZonas    = Number(dados.total_zonas_geral || 0);
+        const totalSecoes   = Number(dados.total_secoes_geral || 0);
+        const temSecao      = !!dados.tem_secao;
+
+        $el.innerHTML =
+            '<div class="kc-nome"><span class="kc-cor"></span><span>' +
+                escapeHtml(ds.nome) +
+            '</span></div>' +
+            '<div class="kc-total">' + fmtNum(ds.total) +
+                ' <span style="font-size:13px;color:#888;font-weight:normal;">votos</span></div>' +
+            '<div class="kc-sub">Maior região: <b>' + escapeHtml(regiaoTop) +
+                '</b> (' + fmtNum(max) + ')</div>' +
+            '<div class="kc-cobertura">' +
+                '<div class="kc-mini-titulo">Cobertura territorial</div>' +
+                '<div class="kc-cob-item">' +
+                    '<span class="kc-cob-num">' + regsComVoto + '</span>' +
+                    '<span class="kc-cob-lbl">região(ões)</span>' +
+                '</div>' +
+                '<div class="kc-cob-item">' +
+                    '<span class="kc-cob-num">' + fmtNum(munsComVoto) + '</span>' +
+                    '<span class="kc-cob-lbl">município(s)</span>' +
+                '</div>' +
+                linhaCobertura('zona(s)', zonasComVoto, totalZonas, true) +
+                (temSecao
+                    ? linhaCobertura('seção(ões)', secoesComVoto, totalSecoes, true)
+                    : '<div class="kc-cob-item" style="grid-column:1/-1;color:#999;font-style:italic;">' +
+                      '<span class="kc-cob-lbl">coluna de seção não encontrada em <code>votos</code></span>' +
+                      '</div>'
+                ) +
+            '</div>';
+    }
+
     function renderKPIs(dados) {
         const ds = dados.datasets || [];
-
-        if (ds[0]) {
-            const regsComVoto = ds[0].valores.filter(v => v > 0).length;
-            const max = Math.max.apply(null, ds[0].valores.concat([0]));
-            const regiaoTop = dados.regioes[ds[0].valores.indexOf(max)] || '—';
-            $kpiC1.innerHTML =
-                '<div class="kc-nome"><span class="kc-cor"></span><span>' + escapeHtml(ds[0].nome) + '</span></div>' +
-                '<div class="kc-total">' + fmtNum(ds[0].total) + ' <span style="font-size:13px;color:#888;font-weight:normal;">votos</span></div>' +
-                '<div class="kc-sub"><b>' + regsComVoto + '</b> região(ões) com voto · maior: <b>' +
-                escapeHtml(regiaoTop) + '</b> (' + fmtNum(max) + ')</div>';
-        } else {
-            $kpiC1.innerHTML =
-                '<div class="kc-nome"><span class="kc-cor"></span><span>Candidato 1</span></div>' +
-                '<div class="kc-vazio">Não selecionado.</div>';
-        }
-
-        if (ds[1]) {
-            const regsComVoto = ds[1].valores.filter(v => v > 0).length;
-            const max = Math.max.apply(null, ds[1].valores.concat([0]));
-            const regiaoTop = dados.regioes[ds[1].valores.indexOf(max)] || '—';
-            $kpiC2.innerHTML =
-                '<div class="kc-nome"><span class="kc-cor"></span><span>' + escapeHtml(ds[1].nome) + '</span></div>' +
-                '<div class="kc-total">' + fmtNum(ds[1].total) + ' <span style="font-size:13px;color:#888;font-weight:normal;">votos</span></div>' +
-                '<div class="kc-sub"><b>' + regsComVoto + '</b> região(ões) com voto · maior: <b>' +
-                escapeHtml(regiaoTop) + '</b> (' + fmtNum(max) + ')</div>';
-        } else {
-            $kpiC2.innerHTML =
-                '<div class="kc-nome"><span class="kc-cor"></span><span>Candidato 2</span></div>' +
-                '<div class="kc-vazio">Nenhum candidato selecionado.</div>';
-        }
+        renderKPICandidato($kpiC1, ds[0], dados, 'cor-1');
+        renderKPICandidato($kpiC2, ds[1], dados, 'cor-2');
     }
 
     // ------------------------------------------------------------
@@ -849,12 +1062,8 @@ const SELF = <?= json_encode($nomeArquivo) ?>;
 
         if (!c1 && !c2) {
             esconderGrafico();
-            $kpiC1.innerHTML =
-                '<div class="kc-nome"><span class="kc-cor"></span><span>Candidato 1</span></div>' +
-                '<div class="kc-vazio">Aguardando seleção…</div>';
-            $kpiC2.innerHTML =
-                '<div class="kc-nome"><span class="kc-cor"></span><span>Candidato 2</span></div>' +
-                '<div class="kc-vazio">Nenhum candidato selecionado.</div>';
+            renderKPICandidato($kpiC1, null, {}, 'cor-1');
+            renderKPICandidato($kpiC2, null, {}, 'cor-2');
             $tab.innerHTML = '<div class="tabela-aviso">Selecione pelo menos um candidato para visualizar o detalhamento.</div>';
             atualizarURL();
             return;
@@ -872,7 +1081,6 @@ const SELF = <?= json_encode($nomeArquivo) ?>;
 
         atualizarURL();
 
-        // Mostra o gráfico já com "Carregando..."
         $wrap.style.display = 'block';
         $aviso.style.display = 'none';
         const ctx = $canvas.getContext('2d');
@@ -935,7 +1143,6 @@ const SELF = <?= json_encode($nomeArquivo) ?>;
         });
     });
 
-    // Auto-carrega se houver candidato na URL
     if ($selC1.value || $selC2.value) carregar();
 
 })();

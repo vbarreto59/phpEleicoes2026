@@ -827,7 +827,7 @@ $temFiltro = ($filtroCand !== '' || $filtroRegiao > 0
                             <th class="centro" style="width:70px;">Zonas</th>
                             <th class="centro" style="width:80px;">Líderes</th>
                             <th class="num" style="width:110px;">Esperado</th>
-                            <th class="num" style="width:110px;">Urnas</th>
+                            <th class="num" style="width:110px;">Votos Urnas</th>
                             <th class="num" style="width:100px;">Diferença</th>
                             <th style="width:180px;">Desempenho</th>
                             <th class="centro" style="width:90px;">Situação</th>

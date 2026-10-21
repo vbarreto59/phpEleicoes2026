@@ -563,18 +563,24 @@ $__mostrarAdmin = ($__ehAdmin && $__ehDono);
                 <span class="icone">🗺️</span>
                 <span class="texto">E3-Mapa de Calor da Equipe</span>
             </a>
+
+            <a href="relatorio_desempenho.php" target="_blank" rel="noopener noreferrer">
+                <span class="icone">📊</span>
+                <span class="texto">E4-Relatório de Desempenho</span>
+            </a>
+
+            <!-- ✅ Separador adicionado após E4 -->
+            <div class="divisor"></div>
+
             <a href="cadastrar_coordenadores.php" target="_blank" rel="noopener noreferrer">
                 <span class="icone">👔</span>
-                <span class="texto">E4-Cad. Coordenadores</span>
+                <span class="texto">E5-Cad. Coordenadores</span>
             </a>
             <a href="cadastrar_liderancas.php" target="_blank" rel="noopener noreferrer">
                 <span class="icone">🤝</span>
-                <span class="texto">E5-Cad. Lideranças</span>
+                <span class="texto">E6-Cad. Lideranças</span>
             </a>
-            <a href="relatorio_desempenho.php" target="_blank" rel="noopener noreferrer">
-                <span class="icone">📊</span>
-                <span class="texto">E6-Relatório de Desempenho</span>
-            </a>
+
         </div>
     </div>
 

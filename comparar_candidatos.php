@@ -246,6 +246,16 @@ $regioes = $pdo->query(
 function abreviarCandidato(string $nome): string {
     $nome = trim($nome);
     if ($nome === '') return '???';
+
+    // Se o nome começa com "CORONEL" (case-insensitive), usa o segundo nome
+    // para gerar a abreviação.
+    if (preg_match('/^CORONEL\s+(.+)$/iu', $nome, $m)) {
+        $resto = trim($m[1]);
+        if ($resto !== '') {
+            return mb_strtoupper(mb_substr($resto, 0, 3, 'UTF-8'), 'UTF-8');
+        }
+    }
+
     return mb_strtoupper(mb_substr($nome, 0, 3, 'UTF-8'), 'UTF-8');
 }
 
@@ -365,25 +375,53 @@ function maiorDaLinha(array $linha, array $candidatos): int {
         max-height: 120px; overflow-y: auto;
     }
 
-    /* Tabela matriz */
-    .tabela-wrap { overflow-x: auto; background:#fff; border-radius:8px;
-                   box-shadow:0 1px 3px rgba(0,0,0,.1); }
+    /* ============================================================
+       TABELA MATRIZ (com scroll + cabeçalho fixo)
+       ============================================================ */
+    .tabela-wrap {
+        /* Scroll vertical E horizontal */
+        overflow: auto;
+        max-height: 72vh;                /* altura máxima do "viewport" da tabela */
+        background:#fff;
+        border-radius:8px;
+        box-shadow:0 1px 3px rgba(0,0,0,.1);
+        /* Necessário para criar contexto de empilhamento p/ sticky */
+        position: relative;
+        /* Scrollbar estilizada */
+        scrollbar-width: thin;
+        scrollbar-color: #b0c4de #f0f4f8;
+    }
+    .tabela-wrap::-webkit-scrollbar { width: 10px; height: 10px; }
+    .tabela-wrap::-webkit-scrollbar-track { background: #f0f4f8; }
+    .tabela-wrap::-webkit-scrollbar-thumb {
+        background: #b0c4de; border-radius: 5px;
+        border: 2px solid #f0f4f8;
+    }
+    .tabela-wrap::-webkit-scrollbar-thumb:hover { background: #8ba5c4; }
+
     table.mtz { border-collapse: collapse; width: 100%; background:#fff; }
     table.mtz th, table.mtz td {
         border: 1px solid #e3e3e3; padding: 6px 8px;
         text-align: left; font-size: 13px; white-space: nowrap;
     }
-    table.mtz th {
-        background:#0069d9; color:#fff; position: sticky; top: 0; z-index: 1;
+
+    /* ---- Cabeçalho fixo ---- */
+    table.mtz thead th {
+        background:#0069d9; color:#fff;
+        position: sticky; top: 0;
+        z-index: 3;                                     /* fica acima das células do corpo */
+        box-shadow: inset 0 -1px 0 #0047a0,              /* borda inferior "fake" */
+                    0 2px 6px rgba(0,0,0,.10);          /* sombra suave sob o header */
     }
-    table.mtz th.col-cand {
+    table.mtz thead th.col-cand {
         text-align: right; min-width: 64px; width: 64px;
         background:#0053b3;
         font-family: monospace; letter-spacing: .5px;
+        box-shadow: inset 0 -1px 0 #003d80,
+                    0 2px 6px rgba(0,0,0,.10);
     }
-    table.mtz td.num {
-        text-align: right; font-family: monospace;
-    }
+
+    table.mtz td.num { text-align: right; font-family: monospace; }
     table.mtz tr:nth-child(even) td { background:#f9f9f9; }
     table.mtz tr:hover td { background:#eef6ff; }
     table.mtz td.mun { font-weight: 600; }
@@ -393,13 +431,32 @@ function maiorDaLinha(array $linha, array $candidatos): int {
         color:#1c7a34; font-weight: bold;
     }
     table.mtz tr:hover td.maior { background:#c1edcd !important; }
+
+    /* ---- Rodapé (total) fixo no fundo ---- */
     table.mtz tfoot td {
-        font-weight: bold; background:#e6f0fa; position: sticky; bottom: 0;
+        font-weight: bold; background:#e6f0fa;
+        position: sticky; bottom: 0;
+        z-index: 2;
+        box-shadow: inset 0 1px 0 #c5d6ea,
+                    0 -2px 6px rgba(0,0,0,.06);
     }
 
-    table.mtz.regioes th { background:#6f42c1; }
-    table.mtz.regioes th.col-cand { background:#5a34a0; }
-    table.mtz.regioes tfoot td { background:#ece2ff; }
+    /* ---- Variante da tabela de regiões (roxo) ---- */
+    table.mtz.regioes thead th {
+        background:#6f42c1;
+        box-shadow: inset 0 -1px 0 #5a34a0,
+                    0 2px 6px rgba(0,0,0,.10);
+    }
+    table.mtz.regioes thead th.col-cand {
+        background:#5a34a0;
+        box-shadow: inset 0 -1px 0 #482a80,
+                    0 2px 6px rgba(0,0,0,.10);
+    }
+    table.mtz.regioes tfoot td {
+        background:#ece2ff;
+        box-shadow: inset 0 1px 0 #d0bef5,
+                    0 -2px 6px rgba(0,0,0,.06);
+    }
 
     .legenda-abrev {
         background:#fff; padding:10px 14px; border-radius:6px;
